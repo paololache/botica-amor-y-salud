@@ -1,0 +1,9 @@
+node_modules
+.next
+.pglite
+.env
+.env.local
+*.tsbuildinfo
+next-env.d.ts
+loadtest/results
+.pg-local
