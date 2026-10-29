@@ -42,7 +42,7 @@ export default function Login() {
         <p className="mt-6 text-[17px] text-white/80 max-w-md">Caja, ventas, inventario por lote y comisiones en un solo lugar. Al entrar ves primero lo que necesita atención.</p>
         <div className="mt-auto pt-12 hidden sm:grid grid-cols-4 gap-3 max-w-md" aria-hidden>
           {["#f7d3d7", "#fbe6bf", "transparent", "#d9ecf5", "transparent", "#fbe6bf", "#f7d3d7", "transparent"].map((c, i) => (
-            <div key={i} className="h-14 rounded-[28px/22px] border border-white/25" style={{ background: c === "transparent" ? "repeating-linear-gradient(135deg, rgba(255,255,255,.08) 0 6px, transparent 6px 12px)" : `radial-gradient(120% 90% at 30% 22%, rgba(255,255,255,.9) 0 16%, transparent 42%), ${c}`, borderStyle: c === "transparent" ? "dashed" : "solid", animation: `presionar .5s ${i * 70}ms both cubic-bezier(.2,.9,.3,1.3)` }} />
+            <div key={i} className="h-14 rounded-[28px/22px] border border-white/25" style={{ background: c === "transparent" ? "repeating-linear-gradient(135deg, rgba(255,255,255,.08) 0 6px, transparent 6px 12px)" : `radial-gradient(120% 90% at 30% 22%, rgba(255,255,255,.9) 0 16%, transparent 42%), ${c}`, borderStyle: c === "transparent" ? "dashed" : "solid", animation: `aparecer .4s ${i * 60}ms both ease` }} />
           ))}
         </div>
       </section>

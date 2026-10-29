@@ -106,7 +106,7 @@ export default function PanelPrincipal() {
               {alertas.length > 8 ? (
                 <div className="px-5 py-3 border-t border-foil"><Boton tam="sm" variante="fantasma" onClick={() => setTodas(!todas)}>{todas ? "Ver menos" : `Ver ${Math.min(alertas.length, 40) - 8} más`}</Boton></div>
               ) : null}
-              {alertas.length ? null : <Vacio titulo="Nada pendiente aquí">Cuando aparezca algo urgente lo verás en el blíster.</Vacio>}
+              {alertas.length ? null : <Vacio titulo="Nada pendiente aquí">Cuando aparezca algo urgente lo verás en el resumen de arriba.</Vacio>}
             </Tarjeta>
           ) : null}
         </div>

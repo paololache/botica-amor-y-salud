@@ -1,10 +1,5 @@
 @import "tailwindcss";
 @import "@fontsource-variable/figtree/wght.css";
-@import "@fontsource/unbounded/500.css";
-@import "@fontsource/unbounded/600.css";
-@import "@fontsource/unbounded/700.css";
-@import "@fontsource/doto/700.css";
-@import "@fontsource/doto/900.css";
 
 @theme {
   --color-foil: #edf0f3;
@@ -32,25 +27,18 @@
   --color-ok: #1f8a63;
   --color-ok-claro: #e0f3ea;
   --font-sans: "Figtree Variable", ui-sans-serif, system-ui, sans-serif;
-  --font-display: "Unbounded", "Figtree Variable", sans-serif;
-  --font-dot: "Doto", ui-monospace, monospace;
+  --font-display: var(--font-sans);
+  --font-dot: var(--font-sans);
   --radius-pill: 999px;
 }
 
-html { background: var(--color-foil); color: var(--color-ink); }
+html { background: var(--color-foil); color: var(--color-ink); -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 body { font-family: var(--font-sans); font-feature-settings: "tnum" 1; -webkit-font-smoothing: antialiased; }
 ::selection { background: var(--color-menta); color: var(--color-petroleo); }
 :focus-visible { outline: 2.5px solid var(--color-amor); outline-offset: 2px; border-radius: 6px; }
 
-.font-display { letter-spacing: -0.02em; }
-.cifra { font-family: var(--font-display); font-weight: 600; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
-
-/* Superficie de lámina: el gris del aluminio del blíster */
-.lamina {
-  background:
-    linear-gradient(135deg, rgba(255,255,255,.65) 0%, rgba(255,255,255,0) 38%, rgba(255,255,255,.35) 62%, rgba(255,255,255,0) 100%),
-    linear-gradient(180deg, #e9edf1, #d9dfe6);
-}
+.font-display { letter-spacing: -0.015em; }
+.cifra { font-family: var(--font-sans); font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
 
 /* Panel lateral: rojo vino con un degradado sutil hacia abajo */
 .panel-vino { background: linear-gradient(180deg, #7a1a2c 0%, #5e1120 60%, #4a0d19 100%); }
@@ -59,53 +47,43 @@ body { font-family: var(--font-sans); font-feature-settings: "tnum" 1; -webkit-f
 
 /* Sello troquelado de lote y vencimiento, como el impreso en el borde de un blíster */
 .sello {
-  font-family: var(--font-dot); font-weight: 900; letter-spacing: .06em; font-size: 13px; line-height: 1;
-  display: inline-flex; gap: .55em; align-items: center; padding: 4px 8px 3px; border-radius: 6px;
-  color: #3b4a47; background: repeating-linear-gradient(90deg, #eef1f4 0 6px, #e6eaee 6px 7px); border: 1px dashed #b7c0ca;
+  font-family: var(--font-sans); font-weight: 600; letter-spacing: .01em; font-size: 12px; line-height: 1; font-variant-numeric: tabular-nums;
+  display: inline-flex; gap: .6em; align-items: center; padding: 5px 8px; border-radius: 6px;
+  color: var(--color-ink-2); background: var(--color-foil); border: 1px solid var(--color-foil-2);
   white-space: nowrap;
 }
 .sello[data-sev="CRITICA"] { color: #a32020; border-color: #e3a4a4; background: #fbecec; }
 .sello[data-sev="ALTA"] { color: #8a5b00; border-color: #ecc98a; background: #fdf4e1; }
 
-/* ---------- Blíster de alertas (elemento distintivo) ---------- */
-.blister {
-  position: relative; border-radius: 26px; padding: 22px 22px 18px; border: 1px solid #c9d0d8;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.9), 0 12px 30px -18px rgba(12,59,54,.35);
+/* ---------- Resumen de alertas ---------- */
+.alertas-panel { background: var(--color-papel); border: 1px solid var(--color-foil-2); border-radius: 18px; padding: 16px; }
+.alertas { display: grid; grid-template-columns: repeat(auto-fill, minmax(152px, 1fr)); gap: 10px; }
+@media (max-width: 420px) { .alertas { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.alerta {
+  --tono: var(--color-ink-3); --tinte: var(--color-foil);
+  display: flex; flex-direction: column; align-items: flex-start; gap: 12px; min-width: 0; padding: 14px; text-align: left;
+  border-radius: 14px; border: 1px solid var(--color-foil-2); background: var(--color-papel); cursor: pointer;
+  transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease;
+  animation: aparecer .35s ease both; animation-delay: calc(var(--i, 0) * 30ms);
 }
-.blister::after { /* línea de corte troquelada */
-  content: ""; position: absolute; left: 18px; right: 18px; bottom: 44px; border-top: 2px dotted rgba(80,96,110,.28);
+.alerta[data-sev="CRITICA"] { --tono: #c43838; --tinte: var(--color-rojo-claro); }
+.alerta[data-sev="ALTA"] { --tono: #b07210; --tinte: var(--color-ambar-claro); }
+.alerta[data-sev="INFO"] { --tono: #2f6f9a; --tinte: #e3eff7; }
+.alerta:hover:not(:disabled) { border-color: var(--color-foil-3); box-shadow: 0 6px 16px -12px rgba(19,33,30,.35); transform: translateY(-1px); }
+.alerta[data-sel="1"] { border-color: var(--tono); box-shadow: 0 0 0 1px var(--tono); }
+.alerta .icono { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: var(--tinte); color: var(--tono); }
+.alerta .n { font-size: 28px; font-weight: 650; line-height: 1; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; color: var(--color-ink); }
+.alerta .l { font-size: 13px; font-weight: 500; line-height: 1.25; color: var(--color-ink-2); }
+.alerta .criticas { font-size: 11.5px; font-weight: 600; color: #c43838; white-space: nowrap; }
+.alerta[data-vacio="1"] { cursor: default; background: transparent; }
+.alerta[data-vacio="1"] .n, .alerta[data-vacio="1"] .l { color: var(--color-ink-3); }
+@media (max-width: 640px) {
+  .alertas-panel { padding: 12px; }
+  .alerta { padding: 12px; gap: 8px; border-radius: 12px; }
+  .alerta .icono { width: 30px; height: 30px; border-radius: 9px; }
+  .alerta .n { font-size: 22px; }
+  .alerta .l { font-size: 12.5px; }
 }
-.alveolos { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 14px 14px; position: relative; z-index: 1; }
-.alveolo {
-  --tinte: #ffffff; --borde: #c3cbd4; position: relative; height: 112px; border-radius: 56px / 46px; cursor: pointer;
-  background:
-    radial-gradient(120% 90% at 30% 22%, rgba(255,255,255,.95) 0 18%, rgba(255,255,255,0) 42%),
-    radial-gradient(140% 120% at 50% 110%, rgba(0,0,0,.10), rgba(0,0,0,0) 55%),
-    var(--tinte);
-  border: 1.5px solid var(--borde);
-  box-shadow: inset 0 -6px 12px rgba(0,0,0,.06), 0 6px 14px -8px rgba(19,33,30,.35), 0 1px 0 rgba(255,255,255,.8);
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; text-align: center;
-  transition: transform .18s ease, box-shadow .18s ease;
-  animation: presionar .5s cubic-bezier(.2,.9,.3,1.3) both; animation-delay: calc(var(--i, 0) * 55ms);
-}
-.alveolo:hover { transform: translateY(-2px); box-shadow: inset 0 -6px 12px rgba(0,0,0,.06), 0 12px 20px -10px rgba(19,33,30,.4); }
-.alveolo[data-sel="1"] { outline: 3px solid var(--color-petroleo); outline-offset: 3px; }
-.alveolo[data-sev="CRITICA"] { --tinte: #f7d3d7; --borde: #e2939b; }
-.alveolo[data-sev="ALTA"] { --tinte: #fbe6bf; --borde: #e7bf72; }
-.alveolo[data-sev="INFO"] { --tinte: #d9ecf5; --borde: #a6c9dc; }
-.alveolo .n { font-family: var(--font-dot); font-weight: 900; font-size: 40px; line-height: .9; color: var(--color-ink); }
-.alveolo .l { font-size: 12.5px; font-weight: 600; color: var(--color-ink-2); padding: 0 10px; line-height: 1.15; }
-/* Alvéolo reventado: sin alertas, la lámina quedó rota y vacía */
-.alveolo[data-vacio="1"] {
-  --tinte: transparent; --borde: #b9c2cc; cursor: default; box-shadow: inset 0 3px 8px rgba(0,0,0,.08);
-  background: repeating-linear-gradient(135deg, rgba(255,255,255,.35) 0 6px, rgba(255,255,255,0) 6px 12px);
-  border-style: dashed; animation-name: reventar;
-  clip-path: polygon(0 12%, 6% 0, 18% 8%, 30% 0, 44% 7%, 58% 0, 72% 9%, 86% 0, 100% 10%, 96% 30%, 100% 52%, 95% 74%, 100% 92%, 84% 100%, 66% 93%, 50% 100%, 34% 93%, 16% 100%, 0 90%, 5% 70%, 0 50%, 5% 30%);
-}
-.alveolo[data-vacio="1"] .n { color: var(--color-ink-3); opacity: .55; }
-.alveolo[data-vacio="1"]:hover { transform: none; }
-@keyframes presionar { from { transform: scale(.82) translateY(6px); opacity: 0; } to { transform: none; opacity: 1; } }
-@keyframes reventar { 0% { transform: scale(.9); opacity: 0; } 60% { transform: scale(1.04); opacity: 1; } 100% { transform: none; } }
 
 /* ---------- Tablas ---------- */
 .tabla { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 14px; }
