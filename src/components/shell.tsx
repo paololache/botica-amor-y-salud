@@ -39,7 +39,7 @@ function Marca() {
       </svg>
       <div className="leading-none">
         <div className="font-display font-semibold text-[17px] text-white tracking-tight">Amor y Salud</div>
-        <div className="text-[11.5px] text-menta/80 mt-1 tracking-wide">Botica · Collique, Comas</div>
+        <div className="text-[11.5px] text-rosado/80 mt-1 tracking-wide">Botica · Collique, Comas</div>
       </div>
     </div>
   );
@@ -57,8 +57,8 @@ export function Shell({ usuario, children }: { usuario: UsuarioUI; children: Rea
     <nav className="flex flex-col gap-0.5" aria-label="Principal">
       {items.map(({ href, texto, icono: I }) => (
         <Link key={href} href={href} aria-current={activo(href) ? "page" : undefined}
-          className={`group flex items-center gap-3 h-10 px-3 rounded-xl text-[14.5px] font-medium transition ${activo(href) ? "bg-white text-petroleo" : "text-white/80 hover:text-white hover:bg-white/8"}`}>
-          <I size={18} className={activo(href) ? "text-amor" : "text-menta/70 group-hover:text-menta"} />
+          className={`group flex items-center gap-3 h-10 px-3 rounded-xl text-[14.5px] font-medium transition ${activo(href) ? "bg-white text-vino" : "text-white/80 hover:text-white hover:bg-white/8"}`}>
+          <I size={18} className={activo(href) ? "text-vino-2" : "text-rosado/70 group-hover:text-rosado"} />
           {texto}
         </Link>
       ))}
@@ -68,7 +68,7 @@ export function Shell({ usuario, children }: { usuario: UsuarioUI; children: Rea
     <div className="mt-auto pt-6">
       <div className="rounded-2xl bg-white/6 p-3.5">
         <div className="text-white font-semibold text-sm truncate">{usuario.nombre}</div>
-        <div className="text-menta/80 text-[12px] mt-0.5">{ROL_NOMBRE[usuario.rol]}</div>
+        <div className="text-rosado/80 text-[12px] mt-0.5">{ROL_NOMBRE[usuario.rol]}</div>
         <button onClick={salir} className="mt-3 inline-flex items-center gap-2 text-[13px] text-white/75 hover:text-white">
           <LogOut size={15} /> Cerrar sesión
         </button>
@@ -78,18 +78,18 @@ export function Shell({ usuario, children }: { usuario: UsuarioUI; children: Rea
   return (
     <Ctx.Provider value={usuario}>
       <div className="min-h-dvh lg:pl-[252px]">
-        <aside className="no-imprimir hidden lg:flex fixed inset-y-0 left-0 w-[252px] flex-col bg-petroleo px-4 py-5 overflow-y-auto">
+        <aside className="no-imprimir hidden lg:flex fixed inset-y-0 left-0 w-[252px] flex-col panel-vino px-4 py-5 overflow-y-auto">
           <div className="px-2 mb-7"><Marca /></div>
           {nav}
           {pie}
         </aside>
-        <div className="no-imprimir lg:hidden sticky top-0 z-30 flex items-center justify-between bg-petroleo px-4 h-14">
+        <div className="no-imprimir lg:hidden sticky top-0 z-30 flex items-center justify-between panel-vino px-4 h-14">
           <Marca />
           <button onClick={() => setAbierto(true)} className="size-10 grid place-items-center text-white rounded-xl hover:bg-white/10" aria-label="Abrir menú"><Menu /></button>
         </div>
         {abierto ? (
-          <div className="lg:hidden fixed inset-0 z-40 bg-petroleo/50" onClick={() => setAbierto(false)}>
-            <aside className="aparecer absolute inset-y-0 left-0 w-[280px] bg-petroleo px-4 py-5 flex flex-col overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+          <div className="lg:hidden fixed inset-0 z-40 bg-vino-oscuro/50" onClick={() => setAbierto(false)}>
+            <aside className="aparecer absolute inset-y-0 left-0 w-[280px] panel-vino px-4 py-5 flex flex-col overflow-y-auto" onClick={(e) => e.stopPropagation()}>
               <div className="flex items-center justify-between px-2 mb-6"><Marca /><button onClick={() => setAbierto(false)} className="text-white" aria-label="Cerrar menú"><X /></button></div>
               {nav}
               {pie}

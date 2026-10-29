@@ -18,6 +18,10 @@
   --color-petroleo-2: #12524b;
   --color-petroleo-3: #1d6b62;
   --color-menta: #7fd6c2;
+  --color-vino: #6e1526;
+  --color-vino-2: #8c1d33;
+  --color-vino-oscuro: #3d0a14;
+  --color-rosado: #f2c4cd;
   --color-amor: #e2457a;
   --color-amor-2: #c22e63;
   --color-amor-claro: #fde7ef;
@@ -47,6 +51,9 @@ body { font-family: var(--font-sans); font-feature-settings: "tnum" 1; -webkit-f
     linear-gradient(135deg, rgba(255,255,255,.65) 0%, rgba(255,255,255,0) 38%, rgba(255,255,255,.35) 62%, rgba(255,255,255,0) 100%),
     linear-gradient(180deg, #e9edf1, #d9dfe6);
 }
+
+/* Panel lateral: rojo vino con un degradado sutil hacia abajo */
+.panel-vino { background: linear-gradient(180deg, #7a1a2c 0%, #5e1120 60%, #4a0d19 100%); }
 
 .tarjeta { background: var(--color-papel); border: 1px solid var(--color-foil-2); border-radius: 18px; }
 
