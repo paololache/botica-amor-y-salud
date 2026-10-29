@@ -33,7 +33,7 @@ export function Campo({ etiqueta, ayuda, error, children, className = "" }: { et
   );
 }
 
-const baseInput = "h-10 rounded-xl border border-foil-3 bg-papel px-3 text-[14.5px] text-ink placeholder:text-ink-3 focus:border-petroleo-3 focus:outline-none focus:ring-3 focus:ring-menta/40 transition";
+const baseInput = "h-10 rounded-xl border border-foil-3 bg-papel px-3 text-[14.5px] text-ink placeholder:text-ink-3 focus:border-vino-2 focus:outline-none focus:ring-3 focus:ring-rosado/50 transition";
 export function Entrada({ className = "", ...p }: InputHTMLAttributes<HTMLInputElement>) {
   return <input {...p} className={`${baseInput} ${/(^|\s)w-/.test(className) ? "" : "w-full"} ${className}`} />;
 }

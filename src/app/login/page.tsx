@@ -31,17 +31,17 @@ export default function Login() {
 
   return (
     <div className="min-h-dvh grid lg:grid-cols-[1.1fr_1fr]">
-      <section className="relative overflow-hidden bg-petroleo text-white px-8 py-10 lg:px-14 lg:py-14 flex flex-col">
+      <section className="relative overflow-hidden panel-vino text-white px-8 py-10 lg:px-14 lg:py-14 flex flex-col">
         <div className="flex items-center gap-3">
           <svg viewBox="0 0 40 40" className="size-10" aria-hidden><g transform="rotate(-35 20 20)"><rect x="6" y="12" width="28" height="16" rx="8" fill="#fff" /><path d="M20 12h6a8 8 0 0 1 0 16h-6z" fill="#e2457a" /></g></svg>
-          <span className="text-menta text-sm tracking-wide">Botica · Jr. Tacna 142, Collique, Comas</span>
+          <span className="text-rosado text-sm tracking-wide">Botica · Jr. Tacna 142, Collique, Comas</span>
         </div>
         <h1 className="font-display font-bold text-[46px] sm:text-[64px] lg:text-[78px] leading-[.95] mt-14 lg:mt-24 tracking-[-0.04em]">
           Amor<br />y Salud
         </h1>
         <p className="mt-6 text-[17px] text-white/80 max-w-md">Caja, ventas, inventario por lote y comisiones en un solo lugar. Al entrar ves primero lo que necesita atención.</p>
         <div className="mt-auto pt-12 hidden sm:grid grid-cols-4 gap-3 max-w-md" aria-hidden>
-          {["#f7d3d7", "#fbe6bf", "transparent", "#d9ecf5", "transparent", "#fbe6bf", "#f7d3d7", "transparent"].map((c, i) => (
+          {["#f2c4cd", "#ffffff", "transparent", "#f2c4cd", "transparent", "#ffffff", "#f2c4cd", "transparent"].map((c, i) => (
             <div key={i} className="h-14 rounded-[28px/22px] border border-white/25" style={{ background: c === "transparent" ? "repeating-linear-gradient(135deg, rgba(255,255,255,.08) 0 6px, transparent 6px 12px)" : `radial-gradient(120% 90% at 30% 22%, rgba(255,255,255,.9) 0 16%, transparent 42%), ${c}`, borderStyle: c === "transparent" ? "dashed" : "solid", animation: `aparecer .4s ${i * 60}ms both ease` }} />
           ))}
         </div>
@@ -62,7 +62,7 @@ export default function Login() {
               <div className="mt-3 flex flex-wrap gap-2">
                 {DEMO.map((d) => (
                   <button type="button" key={d.login} onClick={() => { setLogin(d.login); setPassword("botica2026"); }}
-                    className="h-8 px-3 rounded-full bg-papel border border-foil-3 text-[13px] hover:border-petroleo-3">
+                    className="h-8 px-3 rounded-full bg-papel border border-foil-3 text-[13px] hover:border-vino-2">
                     <b className="font-semibold">{d.login}</b> <span className="text-ink-3">· {d.rol}</span>
                   </button>
                 ))}
