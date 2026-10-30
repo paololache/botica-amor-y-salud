@@ -155,7 +155,7 @@ export default function Vender() {
         </div>
       </div>
 
-      <div className="grid lg:grid-cols-[minmax(0,1fr)_380px] gap-5 items-start">
+      <div className="grid xl:grid-cols-[minmax(0,1fr)_340px] gap-5 items-start">
         <div className="min-w-0 space-y-4">
           <div className="relative">
             <Search size={20} className="absolute left-4 top-1/2 -translate-y-1/2 text-ink-3" />
@@ -205,10 +205,10 @@ export default function Vender() {
             ) : null}
           </div>
 
-          <div className="tarjeta overflow-hidden">
+          <div className="tarjeta overflow-x-auto">
             {lineas.length ? (
               <table className="tabla">
-                <thead><tr><th>Producto</th><th>Presentación</th><th className="num">Cantidad</th><th className="num">Precio</th><th className="num">Desc. %</th><th className="num">Subtotal</th><th /></tr></thead>
+                <thead><tr><th className="min-w-[200px] w-full">Producto</th><th>Presentación</th><th className="num">Cantidad</th><th className="num">Precio</th><th className="num">Desc. %</th><th className="num">Subtotal</th><th /></tr></thead>
                 <tbody>
                   {lineas.map((l, i) => (
                     <tr key={`${l.prod.id}-${l.presId}`} className="aparecer">
@@ -251,7 +251,7 @@ export default function Vender() {
           </div>
         </div>
 
-        <aside className="space-y-4 lg:sticky lg:top-6">
+        <aside className="space-y-4 xl:sticky xl:top-6">
           {sugerencias.length ? (
             <section className="rounded-[18px] border border-amor/25 bg-[linear-gradient(170deg,#fff6f9,#fff)] p-4 aparecer" aria-labelledby="t-sug">
               <h2 id="t-sug" className="flex items-center gap-2 font-display font-semibold text-[14.5px] text-amor-2"><Sparkles size={16} /> Complementa la compra</h2>
