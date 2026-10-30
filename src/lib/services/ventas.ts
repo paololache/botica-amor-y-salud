@@ -172,7 +172,9 @@ export async function detalleVenta(db: Db, id: number) {
     .from(ventaDetalle).innerJoin(producto, eq(producto.id, ventaDetalle.productoId)).innerJoin(presentacion, eq(presentacion.id, ventaDetalle.presentacionId)).innerJoin(lote, eq(lote.id, ventaDetalle.loteId))
     .where(eq(ventaDetalle.ventaId, id));
   const pagos = await db.select().from(ventaPago).where(eq(ventaPago.ventaId, id));
-  return { venta: v, items, pagos };
+  const [cli] = v.clienteId ? await db.select().from(cliente).where(eq(cliente.id, v.clienteId)) : [];
+  const [vend] = await db.select({ nombre: usuario.nombre }).from(usuario).where(eq(usuario.id, v.usuarioId));
+  return { venta: v, items, pagos, cliente: cli ?? null, vendedor: vend?.nombre ?? null };
 }
 
 export async function reenviarPendientes(db: Db) {

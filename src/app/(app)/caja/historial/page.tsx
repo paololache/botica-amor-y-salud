@@ -1,15 +1,20 @@
 "use client";
 import Link from "next/link";
+import { ShieldAlert } from "lucide-react";
 import { useDatos, soles, fechaHora } from "@/lib/cliente";
-import { Cargando, Encabezado, Insignia, Tarjeta, Vacio } from "@/components/ui";
+import { Boton, Cargando, Encabezado, Insignia, Tarjeta, Vacio } from "@/components/ui";
+import { useUsuario } from "@/components/shell";
 
 type S = { id: number; caja: string; cajero: string; turno: string; abiertaEn: string; cerradaEn: string | null; estado: string; diferencia: number | null };
 
 export default function Historial() {
+  const u = useUsuario();
   const { datos } = useDatos<S[]>("/api/caja/sesiones");
   return (
     <div>
-      <Encabezado titulo="Cierres de caja" bajada="Cada cierre tiene su reporte con el arqueo por medio de pago." />
+      <Encabezado titulo="Cierres de caja" bajada="Cada cierre tiene su reporte con el arqueo por medio de pago.">
+        {u.rol === "ADMIN" || u.rol === "CONTADOR" ? <Link href="/caja/eliminaciones"><Boton variante="borde"><ShieldAlert size={16} /> Eliminaciones</Boton></Link> : null}
+      </Encabezado>
       <Tarjeta>
         {!datos ? <div className="p-5"><Cargando /></div> : datos.length ? (
           <div className="overflow-x-auto"><table className="tabla">

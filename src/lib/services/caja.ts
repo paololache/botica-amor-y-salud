@@ -4,6 +4,7 @@ import { z } from "zod";
 import { schema, type Db } from "@/db";
 import type { Sesion } from "../auth";
 import { ErrorNegocio, MEDIOS, r2, totalConteo, type Medio } from "../util";
+import { filas } from "../sqlrows";
 import { parametros } from "./parametros";
 
 const { caja, sesionCaja, movimientoCaja, venta, ventaPago, usuario, comision, auditoria } = schema;
@@ -40,7 +41,16 @@ export async function estadoCaja(db: Db, user: Sesion) {
     const [v] = await db.select({ n: sql<number>`count(*)`.mapWith(Number) }).from(venta)
       .where(and(eq(venta.sesionId, sesion.id), eq(venta.estado, "EMITIDA")));
     const movimientos = await db.select().from(movimientoCaja).where(eq(movimientoCaja.sesionId, sesion.id)).orderBy(desc(movimientoCaja.id));
-    resumen = { tickets: v?.n ?? 0, movimientos };
+    const porMedio = await db.select({ medio: ventaPago.medio, total: sql<number>`coalesce(sum(${ventaPago.monto}),0)`.mapWith(Number) })
+      .from(ventaPago).innerJoin(venta, eq(venta.id, ventaPago.ventaId))
+      .where(and(eq(venta.sesionId, sesion.id), eq(venta.estado, "EMITIDA"))).groupBy(ventaPago.medio);
+    const [an] = await db.select({ n: sql<number>`count(*)`.mapWith(Number) }).from(venta)
+      .where(and(eq(venta.sesionId, sesion.id), eq(venta.estado, "ANULADA")));
+    const ventas = MEDIOS.map((m) => ({ medio: m, total: r2(porMedio.find((p) => p.medio === m)?.total ?? 0) }));
+    resumen = {
+      tickets: v?.n ?? 0, movimientos, ventas, totalVentas: r2(ventas.reduce((a, x) => a + x.total, 0)), anuladas: an?.n ?? 0,
+      esperado: await calcularEsperado(db, sesion.id),
+    };
   }
   return { sesion: sesion ? { id: sesion.id, cajaId: sesion.cajaId, turno: sesion.turno, abiertaEn: sesion.abiertaEn, estado: sesion.estado, fondoInicial: sesion.fondoInicial, caja: cajas.find((c) => c.id === sesion.cajaId)?.nombre } : null, cajas: lista, resumen, conceptos: CONCEPTOS_CAJA };
 }
@@ -91,6 +101,54 @@ export async function registrarMovimiento(db: Db, user: Sesion, input: z.infer<t
   return m;
 }
 
+export const esquemaEliminacion = z.object({ motivo: z.string().trim().min(5, "escribe por qué lo eliminas (mínimo 5 caracteres)") });
+
+/** Quita un ingreso o egreso registrado por error. Solo con la caja abierta, con motivo, y queda en la auditoría. */
+export async function eliminarMovimiento(db: Db, user: Sesion, id: number, input: z.infer<typeof esquemaEliminacion>) {
+  const [m] = await db.select().from(movimientoCaja).where(eq(movimientoCaja.id, id));
+  if (!m) throw new ErrorNegocio("NO_EXISTE", "El movimiento ya no existe.", 404);
+  const [s] = await db.select().from(sesionCaja).where(eq(sesionCaja.id, m.sesionId));
+  if (!s || s.estado !== "ABIERTA") throw new ErrorNegocio("CAJA_CERRADA", "Solo se pueden eliminar movimientos mientras la caja está abierta.");
+  if (s.usuarioId !== user.id && user.rol !== "ADMIN") throw new ErrorNegocio("SIN_PERMISO", "Solo puedes eliminar movimientos de tu propia caja.", 403);
+  await db.transaction(async (tx) => {
+    await tx.delete(movimientoCaja).where(eq(movimientoCaja.id, id));
+    await tx.insert(auditoria).values({
+      usuarioId: user.id, accion: "ELIMINAR_MOVIMIENTO_CAJA", entidad: "movimiento_caja", entidadId: id,
+      detalle: { sesionId: m.sesionId, tipo: m.tipo, concepto: m.concepto, medio: m.medio, monto: m.monto, comprobante: m.comprobante, registradoPor: m.usuarioId, registradoEn: m.fecha, motivo: input.motivo },
+    });
+  });
+  return { id, eliminado: true };
+}
+
+type FilaEliminacion = { id: number; fecha: string; eliminado_por: string; eliminado_por_id: number; detalle: Record<string, unknown>; sesion_id: number | null; caja: string | null; cajero: string | null; cajero_id: number | null; estado: string | null };
+
+function mapearEliminacion(r: FilaEliminacion) {
+  const d = r.detalle ?? {};
+  return {
+    id: r.id, fecha: r.fecha, eliminadoPor: r.eliminado_por, sesionId: r.sesion_id, caja: r.caja, cajero: r.cajero, estadoSesion: r.estado,
+    porOtraPersona: r.cajero_id !== null && Number(r.eliminado_por_id) !== Number(r.cajero_id),
+    tipo: String(d.tipo ?? ""), concepto: String(d.concepto ?? ""), medio: String(d.medio ?? ""), monto: Number(d.monto ?? 0),
+    comprobante: (d.comprobante as string | null) ?? null, motivo: (d.motivo as string | undefined) ?? null, registradoEn: (d.registradoEn as string | undefined) ?? null,
+  };
+}
+
+const consultaEliminaciones = (condicion: ReturnType<typeof sql>) => sql`
+  select a.id, a.fecha, u.nombre as eliminado_por, a.usuario_id as eliminado_por_id, a.detalle,
+    s.id as sesion_id, c.nombre as caja, uc.nombre as cajero, s.usuario_id as cajero_id, s.estado
+  from auditoria a
+  join usuario u on u.id = a.usuario_id
+  left join sesion_caja s on s.id = (a.detalle->>'sesionId')::int
+  left join caja c on c.id = s.caja_id
+  left join usuario uc on uc.id = s.usuario_id
+  where a.accion = 'ELIMINAR_MOVIMIENTO_CAJA' and ${condicion}
+  order by a.id desc limit 500`;
+
+/** Registro de todos los ingresos y egresos eliminados de las cajas, para revisión del administrador y el contador. */
+export async function listarEliminaciones(db: Db, dias = 30) {
+  const rows = await filas<FilaEliminacion>(db, consultaEliminaciones(sql`a.fecha >= now() - make_interval(days => ${dias})`));
+  return rows.map(mapearEliminacion);
+}
+
 export async function calcularEsperado(db: Db, sesionId: number): Promise<Record<Medio, number>> {
   const [s] = await db.select().from(sesionCaja).where(eq(sesionCaja.id, sesionId));
   if (!s) throw new ErrorNegocio("NO_EXISTE", "La sesión de caja no existe.", 404);
@@ -114,7 +172,7 @@ export const esquemaCierre = z.object({
   observacion: z.string().optional(),
 });
 
-/** Cierre ciego: el cajero registra lo contado sin ver el esperado; el sistema calcula la diferencia. */
+/** Cierre de caja: el cajero registra lo contado; el sistema calcula la diferencia contra lo esperado. */
 export async function cerrarCaja(db: Db, user: Sesion, input: z.infer<typeof esquemaCierre>) {
   const s = await sesionDelUsuario(db, user.id);
   if (!s) throw new ErrorNegocio("SIN_CAJA", "No tienes una caja abierta.");
@@ -168,6 +226,7 @@ export async function reporteCierre(db: Db, user: Sesion, sesionId: number) {
     costo: sql<number>`coalesce(sum(${venta.costoTotal}),0)`.mapWith(Number),
   }).from(venta).where(eq(venta.sesionId, s.id)).groupBy(venta.tipoComprobante, venta.estado);
   const movimientos = await db.select().from(movimientoCaja).where(eq(movimientoCaja.sesionId, s.id)).orderBy(movimientoCaja.fecha);
+  const eliminados = (await filas<FilaEliminacion>(db, consultaEliminaciones(sql`(a.detalle->>'sesionId')::int = ${s.id}`))).map(mapearEliminacion);
   const [com] = await db.select({ t: sql<number>`coalesce(sum(${comision.monto}),0)`.mapWith(Number) }).from(comision)
     .innerJoin(venta, eq(venta.id, comision.ventaId)).where(and(eq(venta.sesionId, s.id), ne(comision.estado, "REVERTIDA")));
   const emitidas = porComprobante.filter((p) => p.estado === "EMITIDA");
@@ -183,6 +242,7 @@ export async function reporteCierre(db: Db, user: Sesion, sesionId: number) {
     arqueo: MEDIOS.map((m) => ({ medio: m, esperado: s.esperado?.[m] ?? 0, contado: s.contado?.[m] ?? 0, diferencia: r2((s.contado?.[m] ?? 0) - (s.esperado?.[m] ?? 0)) })),
     diferencia: s.diferencia, fondoSiguiente: s.fondoSiguiente, retiro: s.retiro,
     comisiones: r2(com?.t ?? 0),
+    eliminados,
     margen: ventasTotal > 0 ? r2(((ventasTotal / 1.18 - costo) / (ventasTotal / 1.18)) * 100) : null,
     costoVentas: costo,
   };

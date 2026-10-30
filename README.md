@@ -6,7 +6,7 @@ Sistema de gestión para la Botica Amor y Salud (Comas, Lima). Frontend y backen
 |---|---|
 | Panel principal | Sección de alertas en forma de blíster, ventas del día y del mes, comisión del vendedor, estado de caja y tarjetas de métricas |
 | Vender (POS) | Búsqueda por código, nombre o principio activo, FEFO automático, receta, descuentos con clave de supervisor, pagos mixtos, sugerencias complementarias (F7), comisión al instante |
-| Caja | Apertura por denominación, ingresos y egresos con concepto, cierre ciego, validación del administrador y reporte de cierre imprimible |
+| Caja | Apertura por denominación, ingresos y egresos con concepto, resumen de ventas del turno, cierre de caja con medios digitales autocompletados, validación del administrador y reporte de cierre imprimible |
 | Productos | Stock vigente, vencimiento más próximo e interruptor de campaña (solo administrador) |
 | Compras | Dos pasos: el inventariador recibe sin ver costos y el administrador costea; recién ahí la compra entra al kardex con costo promedio |
 | Salidas y entradas | Motivos de catálogo, evidencia, aprobación por rol y regla de que quien registra no aprueba |
@@ -64,7 +64,7 @@ Además, el panel recalcula las alertas si tienen más de 15 minutos.
 ## Pruebas
 
 ```bash
-npm test                # 17 pruebas de reglas de negocio (FEFO, stock concurrente, comisiones, cierre ciego, costos, RN-09…)
+npm test                # 17 pruebas de reglas de negocio (FEFO, stock concurrente, comisiones, cierre de caja, costos, RN-09…)
 ```
 
 Las pruebas de carga con k6 están en `loadtest/`; los resultados de la última corrida están en `loadtest/RESULTADOS.md`. Para correrlas contra un Postgres real local:

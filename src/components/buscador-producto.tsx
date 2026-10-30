@@ -25,7 +25,7 @@ export function BuscadorProducto({ alElegir, placeholder = "Buscar producto por 
           if (e.key === "Enter" && res[i]) { e.preventDefault(); elegir(res[i]); }
           if (e.key === "Escape") setRes([]);
         }}
-        className="w-full h-10 pl-9 pr-3 rounded-xl border border-foil-3 bg-papel text-[14.5px] focus:border-petroleo-3 focus:outline-none focus:ring-3 focus:ring-menta/40" />
+        className="w-full h-10 pl-9 pr-3 rounded-xl border border-foil-3 bg-papel text-[14.5px] focus:border-vino-2 focus:outline-none focus:ring-3 focus:ring-rosado/50" />
       {res.length ? (
         <ul className="absolute z-30 left-0 right-0 mt-1.5 tarjeta shadow-xl py-1 max-h-80 overflow-y-auto">
           {res.map((p, k) => (

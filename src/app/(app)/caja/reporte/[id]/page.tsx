@@ -11,6 +11,7 @@ type Rep = {
   fondoInicial: number; ventas: { total: number; porComprobante: { tipo: string; cantidad: number; total: number }[] }; anuladas: { cantidad: number; total: number };
   movimientos: { tipo: string; concepto: string; medio: string; monto: number }[]; arqueo: { medio: string; esperado: number; contado: number; diferencia: number }[];
   diferencia: number; fondoSiguiente: number; retiro: number; comisiones: number; margen?: number | null; costoVentas?: number;
+  eliminados: { id: number; fecha: string; eliminadoPor: string; porOtraPersona: boolean; tipo: string; concepto: string; medio: string; monto: number; motivo: string | null }[];
 };
 
 export default function ReporteCierre({ params }: { params: Promise<{ id: string }> }) {
@@ -73,6 +74,14 @@ export default function ReporteCierre({ params }: { params: Promise<{ id: string
             <h2 className="font-display font-semibold text-[15px] mb-2">Ingresos y egresos</h2>
             <table className="tabla"><thead><tr><th>Tipo</th><th>Concepto</th><th>Medio</th><th className="num">Monto</th></tr></thead>
               <tbody>{datos.movimientos.map((m, i) => <tr key={i}><td>{m.tipo}</td><td>{m.concepto}</td><td>{m.medio}</td><td className="num">{soles(m.monto)}</td></tr>)}</tbody></table>
+          </section>
+        ) : null}
+        {datos.eliminados?.length ? (
+          <section className="mt-8">
+            <h2 className="font-display font-semibold text-[15px] mb-1 text-rojo">Movimientos eliminados en este turno ({datos.eliminados.length})</h2>
+            <p className="text-[13px] text-ink-2 mb-2">No suman en el arqueo. Revisa que cada eliminación tenga un motivo válido.</p>
+            <table className="tabla"><thead><tr><th>Eliminado</th><th>Por</th><th>Tipo</th><th>Concepto</th><th>Medio</th><th className="num">Monto</th><th>Motivo</th></tr></thead>
+              <tbody>{datos.eliminados.map((e) => <tr key={e.id}><td>{fechaHora(e.fecha)}</td><td>{e.eliminadoPor}{e.porOtraPersona ? " (no es el cajero)" : ""}</td><td>{e.tipo}</td><td>{e.concepto}</td><td>{e.medio}</td><td className="num">{soles(e.monto)}</td><td>{e.motivo ?? "—"}</td></tr>)}</tbody></table>
           </section>
         ) : null}
         <section className="mt-8 grid md:grid-cols-2 gap-6 text-[14px]">

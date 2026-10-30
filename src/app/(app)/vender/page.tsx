@@ -1,9 +1,9 @@
 "use client";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Search, Minus, Plus, Trash, Sparkles, Printer, ScanBarcode } from "lucide-react";
+import { Search, Minus, Plus, Trash, Sparkles, Printer, ScanBarcode, FileText, Eye } from "lucide-react";
 import { api, useDatos, soles, vence } from "@/lib/cliente";
-import { Boton, Campo, Entrada, Insignia, Modal, Sello, Vacio, useAviso } from "@/components/ui";
+import { Boton, Entrada, Insignia, Modal, Vacio, useAviso } from "@/components/ui";
 import { useUsuario } from "@/components/shell";
 
 type Pres = { id: number; nombre: string; factor: number; pvp: number };
@@ -13,7 +13,7 @@ type Prod = {
 };
 type Item = { prod: Prod; presId: number; cantidad: number; descuentoPct: number; origen: "DIRECTA" | "SUGERENCIA" };
 type Medio = "EFECTIVO" | "YAPE" | "PLIN" | "TARJETA" | "TRANSFERENCIA";
-type Resultado = { ref: string; total: number; vuelto: number; cpeEstado: string; comisionVenta: number; comisionHoy: number; comisionMes: number; tipoComprobante: string; subtotal: number; igv: number };
+type Resultado = { id: number; ref: string; total: number; vuelto: number; cpeEstado: string; comisionVenta: number; comisionHoy: number; comisionMes: number; tipoComprobante: string; subtotal: number; igv: number };
 
 const MEDIOS: { v: Medio; t: string }[] = [{ v: "EFECTIVO", t: "Efectivo" }, { v: "YAPE", t: "Yape" }, { v: "PLIN", t: "Plin" }, { v: "TARJETA", t: "Tarjeta" }, { v: "TRANSFERENCIA", t: "Transferencia" }];
 
@@ -168,30 +168,34 @@ export default function Vender() {
               }}
               placeholder="Escanea el código o escribe nombre, principio activo o síntoma"
               aria-label="Buscar producto" role="combobox" aria-expanded={resultados.length > 0} aria-controls="resultados"
-              className="w-full h-14 pl-12 pr-4 rounded-2xl border-2 border-foil-3 bg-papel text-[16px] focus:border-petroleo-3 focus:outline-none focus:ring-4 focus:ring-menta/30" />
+              className="w-full h-14 pl-12 pr-4 rounded-2xl border-2 border-foil-3 bg-papel text-[16px] focus:border-vino-2 focus:outline-none focus:ring-4 focus:ring-rosado/40" />
             {resultados.length ? (
-              <ul id="resultados" role="listbox" className="aparecer absolute z-20 left-0 right-0 mt-2 tarjeta shadow-2xl max-h-[420px] overflow-y-auto py-1.5">
+              <ul id="resultados" role="listbox" className="aparecer absolute z-20 left-0 right-0 mt-2 tarjeta shadow-2xl max-h-[min(560px,65vh)] overflow-y-auto">
                 {resultados.map((r, i) => (
                   <li key={r.id} role="option" aria-selected={i === activo} onMouseEnter={() => setActivo(i)}
-                    className={`px-4 py-3 flex flex-wrap items-center gap-x-4 gap-y-2 ${i === activo ? "bg-foil/70" : ""}`}>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-semibold">{r.nombre}</span>
-                        {r.condicionVenta !== "LIBRE" ? <Insignia tono="ambar">{r.condicionVenta === "RECETA" ? "Con receta" : "Receta retenida"}</Insignia> : null}
-                        {r.enPromocion ? <Insignia tono="amor">En promoción</Insignia> : null}
+                    className={`px-4 sm:px-5 py-3.5 ${i ? "border-t border-foil" : ""} ${i === activo ? "bg-foil/60" : ""}`}>
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="min-w-0 flex-1">
+                        <div className="font-semibold text-[15px] leading-snug">{r.nombre}</div>
+                        <div className="text-[12.5px] text-ink-2 mt-0.5 truncate">{[r.principioActivo, r.laboratorio, r.ubicacion].filter(Boolean).join(" · ") || r.codigo}</div>
+                        {r.condicionVenta !== "LIBRE" || r.enPromocion ? (
+                          <div className="flex flex-wrap gap-1.5 mt-1.5">
+                            {r.condicionVenta !== "LIBRE" ? <Insignia tono="ambar">{r.condicionVenta === "RECETA" ? "Con receta" : "Receta retenida"}</Insignia> : null}
+                            {r.enPromocion ? <Insignia tono="amor">En promoción</Insignia> : null}
+                          </div>
+                        ) : null}
                       </div>
-                      <div className="text-[12.5px] text-ink-2 mt-0.5">{[r.principioActivo, r.laboratorio, r.ubicacion].filter(Boolean).join(" · ")}</div>
+                      <div className="shrink-0 text-right">
+                        <div className={`text-[13.5px] font-semibold ${r.stockVigente ? "text-ink" : "text-rojo"}`}>{r.stockVigente ? `${r.stockVigente} und.` : "Sin stock"}</div>
+                        {r.proximoVencimiento ? <div className="text-[12px] text-ink-3 mt-0.5">Vence {vence(r.proximoVencimiento)}</div> : null}
+                      </div>
                     </div>
-                    <div className="flex items-center gap-3">
-                      {r.proximoVencimiento ? <Sello vence={vence(r.proximoVencimiento)} /> : null}
-                      <span className={`text-[13px] font-semibold ${r.stockVigente ? "text-ink-2" : "text-rojo"}`}>{r.stockVigente ? `${r.stockVigente} und.` : "Sin stock"}</span>
-                    </div>
-                    <div className="flex gap-1.5 w-full sm:w-auto">
+                    <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-2 mt-3">
                       {r.presentaciones.map((p) => (
                         <button key={p.id} disabled={r.stockVigente < p.factor} onClick={() => agregar(r, p.id)}
-                          className="h-9 px-3 rounded-xl border border-foil-3 bg-papel hover:border-petroleo-3 hover:bg-foil/50 text-[13px] disabled:opacity-35 text-left">
-                          <span className="block text-ink-3 text-[11px] leading-none">{p.nombre}</span>
-                          <span className="font-semibold">{soles(p.pvp)}</span>
+                          className="h-11 px-3 rounded-xl border border-foil-3 bg-papel hover:border-vino-2 hover:bg-foil/50 flex items-center justify-between gap-2 disabled:opacity-35 disabled:hover:border-foil-3">
+                          <span className="text-[12.5px] text-ink-2 truncate">{p.nombre}</span>
+                          <span className="text-[14px] font-semibold tabular-nums">{soles(p.pvp)}</span>
                         </button>
                       ))}
                     </div>
@@ -293,7 +297,7 @@ export default function Vender() {
         </aside>
       </div>
 
-      <Modal abierto={cobrando} alCerrar={() => setCobrando(false)} titulo={`Cobrar ${soles(total)}`} ancho="max-w-xl">
+      <Modal abierto={cobrando} alCerrar={() => setCobrando(false)} titulo={`Cobrar ${soles(total)}`} ancho="max-w-2xl">
         <div className="space-y-3">
           {pagos.map((p, i) => (
             <div key={i} className="flex flex-wrap gap-2 items-center">
@@ -303,7 +307,12 @@ export default function Vender() {
                     className={`h-9 px-3 rounded-xl text-[13px] font-semibold border ${p.medio === m.v ? "bg-petroleo text-white border-petroleo" : "bg-papel border-foil-3 text-ink-2"}`}>{m.t}</button>
                 ))}
               </div>
+              <div className="flex items-center gap-1.5 ml-auto">
               <Entrada autoFocus={i === 0} inputMode="decimal" placeholder={i === 0 ? total.toFixed(2) : "0.00"} value={p.monto} onChange={(e) => setPagos((ps) => ps.map((x, k) => (k === i ? { ...x, monto: e.target.value.replace(",", ".") } : x)))} className="w-32 text-right font-semibold" aria-label="Monto" />
+              {pagos.length > 1 ? (
+                <button onClick={() => setPagos((ps) => ps.filter((_, k) => k !== i))} className="size-10 grid place-items-center rounded-xl text-ink-3 hover:text-rojo hover:bg-rojo-claro" aria-label={`Quitar pago ${i + 1}`} title="Quitar este pago"><Trash size={16} /></button>
+              ) : null}
+              </div>
             </div>
           ))}
           <div className="flex flex-wrap gap-2">
@@ -353,10 +362,13 @@ export default function Vender() {
                 <span className="text-ink-2">Hoy {soles(resultado.comisionHoy)} · Mes {soles(resultado.comisionMes)}</span>
               </div>
             ) : null}
-            <div className="flex gap-2 mt-5">
-              <Boton variante="borde" className="flex-1" onClick={() => window.print()}><Printer size={16} /> Imprimir ticket</Boton>
-              <Boton variante="amor" className="flex-1" autoFocus onClick={nueva}>Nueva venta <Tecla k="F2" /></Boton>
+            <div className="grid grid-cols-3 gap-2 mt-5">
+              <Boton variante="borde" onClick={() => window.open(`/comprobante/${resultado.id}?formato=ticket`, "_blank")}><Eye size={16} /> Ver</Boton>
+              <Boton variante="borde" onClick={() => window.open(`/comprobante/${resultado.id}?formato=ticket&imprimir=1`, "_blank")}><Printer size={16} /> Ticket</Boton>
+              <Boton variante="borde" onClick={() => window.open(`/comprobante/${resultado.id}?formato=a4&imprimir=1`, "_blank")}><FileText size={16} /> A4</Boton>
             </div>
+            <Boton variante="amor" className="w-full mt-2" autoFocus onClick={nueva}>Nueva venta <Tecla k="F2" /></Boton>
+            <p className="text-[12px] text-ink-3 text-center mt-3">Esta venta también queda en Ventas, donde puedes volver a ver o imprimir el comprobante.</p>
           </div>
         ) : null}
       </Modal>

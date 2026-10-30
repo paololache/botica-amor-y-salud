@@ -94,7 +94,7 @@ describe("Venta con FEFO, campañas y comisiones", () => {
   });
 });
 
-describe("Cierre ciego de caja", () => {
+describe("Cierre de caja", () => {
   it("calcula el esperado y pide validación si la diferencia supera el umbral", async () => {
     const esp = await calcularEsperado(db, (await db.select().from(schema.sesionCaja))[0].id);
     expect(esp.EFECTIVO).toBe(150 + 54 * 2);

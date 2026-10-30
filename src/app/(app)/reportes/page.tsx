@@ -1,7 +1,8 @@
 "use client";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Download, Printer, Save, Trash } from "lucide-react";
+import Link from "next/link";
+import { Download, Printer, Save, ShieldAlert, Trash } from "lucide-react";
 import { api, useDatos, soles, numero, fechaCorta, hoyLima, sumarDias, vence } from "@/lib/cliente";
 import { descargarCsv } from "@/lib/csv";
 import { Boton, Campo, Cargando, Encabezado, Entrada, Insignia, Interruptor, Sello, Selector, Tarjeta, Vacio, useAviso } from "@/components/ui";
@@ -73,6 +74,7 @@ function Reportes() {
       <Encabezado titulo="Reportes" bajada="Los más usados ya están listos; cambia el periodo, la agrupación y las métricas, o crea métricas propias.">
         <Boton variante="borde" onClick={exportar} disabled={!res && !esp}><Download size={16} /> Excel</Boton>
         <Boton variante="borde" onClick={() => window.print()}><Printer size={16} /> PDF</Boton>
+        {u.rol === "ADMIN" || u.rol === "CONTADOR" ? <Link href="/caja/eliminaciones"><Boton variante="borde"><ShieldAlert size={16} /> Eliminaciones de caja</Boton></Link> : null}
       </Encabezado>
       <div className={`grid gap-6 items-start ${u.rol === "ADMIN" ? "2xl:grid-cols-[240px_minmax(0,1fr)_320px] xl:grid-cols-[240px_minmax(0,1fr)]" : "xl:grid-cols-[240px_minmax(0,1fr)]"}`}>
         <nav className="no-imprimir space-y-5" aria-label="Catálogo de reportes">

@@ -15,6 +15,7 @@ const TODOS: Rol[] = [...ROLES];
 export const PERMISOS = {
   panel: TODOS,
   caja: ["ADMIN", "CAJERO", "VENDEDOR", "QF"],
+  "caja.auditoria": ["ADMIN", "CONTADOR"],
   ventas: ["ADMIN", "CAJERO", "VENDEDOR", "QF"],
   "ventas.ver": ["ADMIN", "CAJERO", "VENDEDOR", "QF", "CONTADOR"],
   "ventas.anular": ["ADMIN"],
