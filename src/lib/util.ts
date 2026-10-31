@@ -26,6 +26,13 @@ export function inicioDiaLima(fecha: string): Date {
 export const r2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 export const r4 = (n: number) => Math.round((n + Number.EPSILON) * 10000) / 10000;
 
+export const IGV = 1.18;
+
+/** PVP con IGV a partir del costo unitario sin IGV y la utilidad sobre el costo; sube a los 10 céntimos. */
+export function precioSugerido(costo: number, factor: number, utilidad: number): number {
+  return Math.ceil(r4(costo * factor * (1 + utilidad / 100) * IGV * 10)) / 10;
+}
+
 export class ErrorNegocio extends Error {
   constructor(public codigo: string, mensaje: string, public status = 400) {
     super(mensaje);

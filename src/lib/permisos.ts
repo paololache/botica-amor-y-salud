@@ -20,6 +20,7 @@ export const PERMISOS = {
   "ventas.ver": ["ADMIN", "CAJERO", "VENDEDOR", "QF", "CONTADOR"],
   "ventas.anular": ["ADMIN"],
   "productos.ver": TODOS,
+  "productos.gestionar": ["ADMIN"],
   "compras.recibir": ["ADMIN", "INVENTARIADOR"],
   "compras.costear": ["ADMIN"],
   "salidas.registrar": ["ADMIN", "INVENTARIADOR", "QF"],

@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { Search } from "lucide-react";
 import { api, soles } from "@/lib/cliente";
 
-export type ProdBusqueda = { id: number; codigo: string; nombre: string; principioActivo: string | null; stockVigente: number; stock: number; presentaciones: { id: number; nombre: string; factor: number; pvp: number }[] };
+export type ProdBusqueda = { id: number; codigo: string; nombre: string; principioActivo: string | null; stockVigente: number; stock: number; presentaciones: { id: number; nombre: string; factor: number; pvp: number }[]; presentacionEscaneadaId?: number };
 
 export function BuscadorProducto({ alElegir, placeholder = "Buscar producto por nombre o código", autoFocus }: { alElegir: (p: ProdBusqueda) => void; placeholder?: string; autoFocus?: boolean }) {
   const [q, setQ] = useState("");

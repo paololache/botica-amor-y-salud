@@ -1,9 +1,11 @@
-import { and, asc, eq, gt, ilike, inArray, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, ilike, inArray, ne, or, sql } from "drizzle-orm";
+import { z } from "zod";
 import { schema, type Db } from "@/db";
-import { hoy as hoyLima } from "../util";
+import type { Sesion } from "../auth";
+import { ErrorNegocio, hoy as hoyLima, r2, r4, sumarDias } from "../util";
 import { estadoEfectivo } from "./campanas";
 
-const { producto, presentacion, lote, categoria, campana, complemento } = schema;
+const { producto, presentacion, lote, categoria, campana, complemento, kardex, auditoria } = schema;
 
 async function stockYVencimiento(db: Db, ids: number[], hoy: string) {
   if (!ids.length) return new Map<number, { stock: number; vigente: number; proxVenc: string | null }>();
@@ -24,17 +26,20 @@ async function campanasDe(db: Db, ids: number[], hoy: string) {
   return m;
 }
 
-/** Búsqueda del punto de venta: código exacto, nombre o principio activo. */
+/** Búsqueda del punto de venta: código exacto (del producto o de una presentación), nombre o principio activo. */
 export async function buscarProductos(db: Db, q: string, limite = 12) {
   const hoy = hoyLima();
   const t = q.trim();
   if (!t) return [];
   const patron = `%${t.replace(/[%_]/g, "")}%`;
+  const [escaneada] = await db.select({ id: presentacion.id, productoId: presentacion.productoId }).from(presentacion).where(and(eq(presentacion.codigo, t), eq(presentacion.activo, true)));
+  const porCodigo = or(eq(producto.codigo, t), escaneada ? eq(producto.id, escaneada.productoId) : undefined);
   const prods = await db.select().from(producto)
-    .where(and(eq(producto.activo, true), or(eq(producto.codigo, t), ilike(producto.nombre, patron), ilike(producto.principioActivo, patron))))
-    .orderBy(sql`case when ${producto.codigo} = ${t} then 0 when ${producto.nombre} ilike ${t + "%"} then 1 else 2 end`, asc(producto.nombre))
+    .where(and(eq(producto.activo, true), or(porCodigo, ilike(producto.nombre, patron), ilike(producto.principioActivo, patron))))
+    .orderBy(sql`case when ${porCodigo} then 0 when ${producto.nombre} ilike ${t + "%"} then 1 else 2 end`, asc(producto.nombre))
     .limit(limite);
-  return enriquecer(db, prods, hoy);
+  const lista = await enriquecer(db, prods, hoy);
+  return lista.map((p) => ({ ...p, presentacionEscaneadaId: p.id === escaneada?.productoId ? escaneada.id : undefined }));
 }
 
 async function enriquecer(db: Db, prods: (typeof producto.$inferSelect)[], hoy: string) {
@@ -45,11 +50,12 @@ async function enriquecer(db: Db, prods: (typeof producto.$inferSelect)[], hoy: 
   return prods.map((p) => {
     const c = camps.get(p.id);
     return {
-      id: p.id, codigo: p.codigo, nombre: p.nombre, principioActivo: p.principioActivo, concentracion: p.concentracion, laboratorio: p.laboratorio,
+      id: p.id, codigo: p.codigo, nombre: p.nombre, principioActivo: p.principioActivo, concentracion: p.concentracion, formaFarmaceutica: p.formaFarmaceutica,
+      registroSanitario: p.registroSanitario, registroVence: p.registroVence, laboratorio: p.laboratorio,
       condicionVenta: p.condicionVenta, ubicacion: p.ubicacion, stockMinimo: p.stockMinimo, costoPromedio: p.costoPromedio, porcentajeUtilidad: p.porcentajeUtilidad,
       stock: st.get(p.id)?.stock ?? 0, stockVigente: st.get(p.id)?.vigente ?? 0, proximoVencimiento: st.get(p.id)?.proxVenc ?? null,
       enPromocion: c?.estado === "ACTIVA", campana: c ?? null,
-      presentaciones: pres.filter((x) => x.productoId === p.id).map((x) => ({ id: x.id, nombre: x.nombre, factor: x.factor, pvp: x.pvp })),
+      presentaciones: pres.filter((x) => x.productoId === p.id).map((x) => ({ id: x.id, nombre: x.nombre, factor: x.factor, pvp: x.pvp, codigo: x.codigo })),
     };
   });
 }
@@ -58,12 +64,14 @@ export async function listarStock(db: Db, opciones: { q?: string; categoriaId?: 
   const hoy = hoyLima();
   const cond = [eq(producto.activo, true)];
   if (opciones.q) {
-    const patron = `%${opciones.q.trim()}%`;
-    cond.push(or(eq(producto.codigo, opciones.q.trim()), ilike(producto.nombre, patron), ilike(producto.principioActivo, patron))!);
+    const t = opciones.q.trim();
+    const patron = `%${t}%`;
+    cond.push(or(eq(producto.codigo, t), sql`exists (select 1 from presentacion pr where pr.producto_id = ${producto.id} and pr.codigo = ${t} and pr.activo)`, ilike(producto.nombre, patron), ilike(producto.principioActivo, patron), ilike(producto.laboratorio, patron))!);
   }
   if (opciones.categoriaId) cond.push(eq(producto.categoriaId, opciones.categoriaId));
   if (opciones.filtro === "promocion") cond.push(sql`exists (select 1 from campana c where c.producto_id = ${producto.id} and c.fin >= ${hoy} and (c.estado = 'ACTIVA' or (c.estado = 'PROGRAMADA' and c.inicio <= ${hoy})))`);
-  if (opciones.filtro === "bajo") cond.push(sql`(select coalesce(sum(l.cantidad),0) from lote l where l.producto_id = ${producto.id}) <= ${producto.stockMinimo}`);
+  if (opciones.filtro === "bajo") cond.push(sql`(select coalesce(sum(l.cantidad),0) from lote l where l.producto_id = ${producto.id} and l.estado = 'ACTIVO' and l.vencimiento > ${hoy}) <= ${producto.stockMinimo}`);
+  if (opciones.filtro === "vencer") cond.push(sql`exists (select 1 from lote l where l.producto_id = ${producto.id} and l.cantidad > 0 and l.estado = 'ACTIVO' and l.vencimiento > ${hoy} and l.vencimiento <= ${sumarDias(hoy, 90)})`);
   const pagina = Math.max(1, opciones.pagina ?? 1);
   const prods = await db.select().from(producto).where(and(...cond)).orderBy(asc(producto.nombre)).limit(50).offset((pagina - 1) * 50);
   const [tot] = await db.select({ n: sql<number>`count(*)`.mapWith(Number) }).from(producto).where(and(...cond));
@@ -79,7 +87,101 @@ export async function fichaProducto(db: Db, id: number) {
   if (!p) return null;
   const [e] = await enriquecer(db, [p], hoy);
   const lotes = await db.select().from(lote).where(eq(lote.productoId, id)).orderBy(asc(lote.vencimiento));
-  return { ...e, lotes: lotes.map((l) => ({ id: l.id, numero: l.numero, vencimiento: l.vencimiento, cantidad: l.cantidad, estado: l.estado, costoUnitario: l.costoUnitario })) };
+  return { ...e, categoriaId: p.categoriaId, tieneKardex: await tieneMovimientos(db, id), lotes: lotes.map((l) => ({ id: l.id, numero: l.numero, vencimiento: l.vencimiento, cantidad: l.cantidad, estado: l.estado, costoUnitario: l.costoUnitario })) };
+}
+
+async function tieneMovimientos(db: Db, id: number) {
+  const [k] = await db.select({ id: kardex.id }).from(kardex).where(eq(kardex.productoId, id)).limit(1);
+  return !!k;
+}
+
+const codigoBarras = z.string().trim().regex(/^[A-Za-z0-9-]{4,20}$/, "usa de 4 a 20 letras o números");
+const empaque = z.object({ factor: z.number().int().min(2, "debe traer al menos 2 unidades"), pvp: z.number().positive("el precio debe ser mayor a 0"), codigo: codigoBarras.nullable().optional() });
+
+export const esquemaProducto = z.object({
+  codigo: codigoBarras,
+  nombre: z.string().trim().min(3, "mínimo 3 caracteres").max(120),
+  laboratorio: z.string().trim().min(2, "es obligatorio"),
+  principioActivo: z.string().trim().nullable().optional(),
+  concentracion: z.string().trim().nullable().optional(),
+  formaFarmaceutica: z.string().trim().nullable().optional(),
+  registroSanitario: z.string().trim().nullable().optional(),
+  registroVence: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "fecha inválida").nullable().optional(),
+  porcentajeUtilidad: z.number().min(0).max(999).default(30),
+  categoriaId: z.number().int().nullable().optional(),
+  condicionVenta: z.enum(["LIBRE", "RECETA", "RECETA_RETENIDA"]).default("LIBRE"),
+  stockMinimo: z.number().int().min(0).default(0),
+  costoUnitario: z.number().min(0),
+  precioUnidad: z.number().positive("el precio debe ser mayor a 0"),
+  blister: empaque.nullable().optional(),
+  caja: empaque.nullable().optional(),
+}).refine((d) => !d.blister || !d.caja || d.blister.factor !== d.caja.factor, { message: "el blíster y la caja no pueden traer las mismas unidades", path: ["caja"] })
+  .refine((d) => new Set(codigosDe(d)).size === codigosDe(d).length, { message: "cada presentación necesita un código distinto", path: ["codigo"] })
+  .refine((d) => !d.registroVence || !!d.registroSanitario, { message: "indica el número de registro sanitario", path: ["registroSanitario"] });
+type EntradaProducto = z.infer<typeof esquemaProducto>;
+
+function codigosDe(d: { codigo: string; blister?: { codigo?: string | null } | null; caja?: { codigo?: string | null } | null }) {
+  return [d.codigo, d.blister?.codigo, d.caja?.codigo].filter((c): c is string => !!c);
+}
+
+function presentacionesDe(d: EntradaProducto) {
+  return [
+    { nombre: "Unidad", factor: 1, pvp: r2(d.precioUnidad), codigo: null },
+    ...(d.blister ? [{ nombre: `Blíster x${d.blister.factor}`, factor: d.blister.factor, pvp: r2(d.blister.pvp), codigo: d.blister.codigo ?? null }] : []),
+    ...(d.caja ? [{ nombre: `Caja x${d.caja.factor}`, factor: d.caja.factor, pvp: r2(d.caja.pvp), codigo: d.caja.codigo ?? null }] : []),
+  ];
+}
+
+/** Un código identifica a una sola presentación en todo el catálogo: se valida contra productos y presentaciones. */
+async function validarCodigosLibres(db: Db, codigos: string[], excepto?: number) {
+  const [otro] = await db.select({ nombre: producto.nombre, codigo: producto.codigo }).from(producto)
+    .where(excepto ? and(inArray(producto.codigo, codigos), ne(producto.id, excepto)) : inArray(producto.codigo, codigos));
+  if (otro) throw new ErrorNegocio("CODIGO_DUPLICADO", `El código ${otro.codigo} ya pertenece a «${otro.nombre}».`, 409);
+  const [otraPres] = await db.select({ nombre: producto.nombre, codigo: presentacion.codigo }).from(presentacion).innerJoin(producto, eq(producto.id, presentacion.productoId))
+    .where(excepto ? and(inArray(presentacion.codigo, codigos), ne(presentacion.productoId, excepto)) : inArray(presentacion.codigo, codigos));
+  if (otraPres) throw new ErrorNegocio("CODIGO_DUPLICADO", `El código ${otraPres.codigo} ya pertenece a «${otraPres.nombre}».`, 409);
+}
+
+const datosProducto = (d: EntradaProducto) => ({
+  codigo: d.codigo, nombre: d.nombre, laboratorio: d.laboratorio, principioActivo: d.principioActivo || null, concentracion: d.concentracion || null,
+  formaFarmaceutica: d.formaFarmaceutica || null, registroSanitario: d.registroSanitario || null, registroVence: d.registroVence || null,
+  categoriaId: d.categoriaId ?? null, condicionVenta: d.condicionVenta, stockMinimo: d.stockMinimo, porcentajeUtilidad: d.porcentajeUtilidad,
+});
+
+/** El producto nace con stock 0: las unidades entran por Compras, con lote y vencimiento, para que el kardex cuadre. */
+export async function crearProducto(db: Db, user: Sesion, d: EntradaProducto) {
+  await validarCodigosLibres(db, codigosDe(d));
+  return db.transaction(async (tx) => {
+    const [p] = await tx.insert(producto).values({ ...datosProducto(d), costoPromedio: r4(d.costoUnitario) }).returning({ id: producto.id });
+    await tx.insert(presentacion).values(presentacionesDe(d).map((x) => ({ ...x, productoId: p.id })));
+    await tx.insert(auditoria).values({ usuarioId: user.id, accion: "CREAR_PRODUCTO", entidad: "producto", entidadId: p.id, detalle: { codigo: d.codigo, nombre: d.nombre } });
+    return { id: p.id };
+  });
+}
+
+/** Una presentación que ya no se usa se desactiva, no se borra: las ventas pasadas la siguen citando. */
+export async function editarProducto(db: Db, user: Sesion, id: number, d: EntradaProducto) {
+  const [p] = await db.select().from(producto).where(eq(producto.id, id));
+  if (!p) throw new ErrorNegocio("NO_EXISTE", "El producto no existe.", 404);
+  await validarCodigosLibres(db, codigosDe(d), id);
+  // Con movimientos, el costo lo calculan las compras (promedio ponderado) y no se edita a mano.
+  const costoPromedio = (await tieneMovimientos(db, id)) ? p.costoPromedio : r4(d.costoUnitario);
+  const nuevas = presentacionesDe(d);
+  await db.transaction(async (tx) => {
+    await tx.update(producto).set({ ...datosProducto(d), costoPromedio }).where(eq(producto.id, id));
+    const actuales = await tx.select().from(presentacion).where(eq(presentacion.productoId, id));
+    // Se liberan primero: así se pueden intercambiar códigos, y una presentación quitada no retiene el suyo.
+    await tx.update(presentacion).set({ codigo: null }).where(eq(presentacion.productoId, id));
+    for (const n of nuevas) {
+      const a = actuales.find((x) => x.factor === n.factor);
+      if (a) await tx.update(presentacion).set({ nombre: n.nombre, pvp: n.pvp, codigo: n.codigo, activo: true }).where(eq(presentacion.id, a.id));
+      else await tx.insert(presentacion).values({ ...n, productoId: id });
+    }
+    const quitar = actuales.filter((a) => !nuevas.some((n) => n.factor === a.factor)).map((a) => a.id);
+    if (quitar.length) await tx.update(presentacion).set({ activo: false }).where(inArray(presentacion.id, quitar));
+    await tx.insert(auditoria).values({ usuarioId: user.id, accion: "EDITAR_PRODUCTO", entidad: "producto", entidadId: id, detalle: { antes: { codigo: p.codigo, nombre: p.nombre, costoPromedio: p.costoPromedio }, despues: { codigo: d.codigo, nombre: d.nombre, costoPromedio }, precios: nuevas } });
+  });
+  return { id };
 }
 
 /** Complementos con stock para lo que hay en el carrito; primero los que están en campaña activa. */

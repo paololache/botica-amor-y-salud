@@ -2,7 +2,7 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { schema, type Db } from "@/db";
 import type { Sesion } from "../auth";
-import { ErrorNegocio, hoy as hoyLima, r2, r4, sumarDias } from "../util";
+import { ErrorNegocio, hoy as hoyLima, precioSugerido, r2, r4, sumarDias } from "../util";
 import { actualizarCostoPromedio, bloquearProductos, registrarKardex, sumarLote } from "./inventario";
 import { parametros } from "./parametros";
 
@@ -112,7 +112,7 @@ export async function costearCompra(db: Db, user: Sesion, id: number, input: z.i
       await registrarKardex(tx, { productoId: f.productoId, loteId, tipo: "COMPRA", documentoTipo: det.compra.tipoComprobante, documentoId: id, documentoRef: ref, entrada: f.unidades, costoUnitario: costoU, usuarioId: user.id });
       await tx.update(compraDetalle).set({ costoPresentacion: cp, loteId }).where(eq(compraDetalle.id, f.id));
       const it = det.items.find((x) => x.id === f.id)!;
-      pvpSugerido.push({ producto: it.producto, pvpSugerido: Math.ceil(cpNuevo * it.factor * (1 + it.porcentajeUtilidad / 100) * 10) / 10 });
+      pvpSugerido.push({ producto: it.producto, pvpSugerido: precioSugerido(cpNuevo, it.factor, it.porcentajeUtilidad) });
     }
     await tx.update(compra).set({ estado: "CONFIRMADA", costeadoPor: user.id, costeadoEn: new Date(), total: r2(total) }).where(eq(compra.id, id));
     await tx.insert(auditoria).values({ usuarioId: user.id, accion: "COSTEAR_COMPRA", entidad: "compra", entidadId: id, detalle: { total: r2(total) } });

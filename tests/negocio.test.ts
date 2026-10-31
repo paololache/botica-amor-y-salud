@@ -9,9 +9,10 @@ import { registrarRecepcion, costearCompra } from "@/lib/services/compras";
 import { registrarMovimiento, decidirMovimiento } from "@/lib/services/salidas";
 import { evaluarAlertas, alertasDelRol } from "@/lib/services/alertas";
 import { ejecutarReporte, crearMetrica } from "@/lib/services/reportes";
+import { buscarProductos, crearProducto, editarProducto, esquemaProducto, fichaProducto, listarStock } from "@/lib/services/productos";
 import { enmascarar } from "@/lib/permisos";
 import { evaluar, validarFormula } from "@/lib/formula";
-import { hoy, sumarDias } from "@/lib/util";
+import { hoy, precioSugerido, sumarDias } from "@/lib/util";
 import { base, preparar } from "./fixture";
 
 let db: Db;
@@ -120,6 +121,9 @@ describe("Compra en dos pasos y salidas", () => {
     expect(despues - antes).toBe(10);
     const [p] = await db.select().from(schema.producto).where(eq(schema.producto.id, F.vit.id));
     expect(p.costoPromedio).toBeGreaterThan(10);
+    const [det] = await db.select({ factor: schema.presentacion.factor }).from(schema.compraDetalle).innerJoin(schema.presentacion, eq(schema.presentacion.id, schema.compraDetalle.presentacionId)).where(eq(schema.compraDetalle.compraId, r.id));
+    expect(c.pvpSugerido[0].pvpSugerido).toBe(precioSugerido(p.costoPromedio, det.factor, p.porcentajeUtilidad));
+    expect(c.pvpSugerido[0].pvpSugerido).toBeGreaterThan(p.costoPromedio * det.factor * 1.18);
   });
   it("quien registra la salida no la aprueba (RN-09)", async () => {
     const [venc] = await db.select().from(schema.motivo).where(eq(schema.motivo.codigo, "VENCIMIENTO"));
@@ -162,5 +166,88 @@ describe("Alertas y reportes", () => {
     await expect(ejecutarReporte(db, "QF", { agrupar: "categoria", metricas: [m.codigo] })).rejects.toThrow(/no está disponible/);
     const r = await ejecutarReporte(db, "ADMIN", { agrupar: "categoria", metricas: ["ventas", m.codigo] });
     expect(r.filas.length).toBeGreaterThan(0);
+  });
+});
+
+describe("Alta y edición de productos", () => {
+  const datos = { codigo: "7750000000011", nombre: "Dolofenex Forte", laboratorio: "IQ Farma", costoUnitario: 0.67, precioUnidad: 2, blister: { factor: 10, pvp: 18 }, caja: { factor: 100, pvp: 150 } };
+
+  it("crea el producto con sus presentaciones y sin stock; rechaza el código repetido", async () => {
+    const { id } = await crearProducto(db, F.admin, esquemaProducto.parse(datos));
+    const f = (await fichaProducto(db, id))!;
+    expect(f.stock).toBe(0);
+    expect(f.costoPromedio).toBe(0.67);
+    expect(f.presentaciones.map((p) => [p.nombre, p.factor, p.pvp])).toEqual([["Unidad", 1, 2], ["Blíster x10", 10, 18], ["Caja x100", 100, 150]]);
+    await expect(crearProducto(db, F.admin, esquemaProducto.parse({ ...datos, nombre: "Otro" }))).rejects.toThrow(/ya pertenece/);
+  });
+
+  it("no acepta blíster y caja con las mismas unidades", () => {
+    expect(() => esquemaProducto.parse({ ...datos, caja: { factor: 10, pvp: 100 } })).toThrow();
+  });
+
+  it("al editar desactiva la presentación quitada y respeta el costo si ya hay kardex", async () => {
+    const [p] = await db.select().from(schema.producto).where(eq(schema.producto.codigo, datos.codigo));
+    await editarProducto(db, F.admin, p.id, esquemaProducto.parse({ ...datos, costoUnitario: 0.8, precioUnidad: 2.5, caja: null }));
+    const f = (await fichaProducto(db, p.id))!;
+    expect(f.costoPromedio).toBe(0.8);
+    expect(f.presentaciones.map((x) => [x.factor, x.pvp])).toEqual([[1, 2.5], [10, 18]]);
+    await db.insert(schema.kardex).values({ productoId: p.id, tipo: "COMPRA", documentoTipo: "FACTURA", entrada: 1, costoUnitario: 0.8, saldoUnidades: 1, costoPromedio: 0.8, saldoValorizado: 0.8 });
+    await editarProducto(db, F.admin, p.id, esquemaProducto.parse({ ...datos, costoUnitario: 9 }));
+    expect((await fichaProducto(db, p.id))!.costoPromedio).toBe(0.8);
+  });
+
+  it("sugiere el precio con utilidad e IGV, redondeando hacia arriba a 10 céntimos", () => {
+    expect(precioSugerido(0.67, 1, 30)).toBe(1.1);
+    expect(precioSugerido(0.67, 10, 30)).toBe(10.3);
+    expect(precioSugerido(1, 1, 0)).toBe(1.2);
+  });
+
+  describe("códigos por presentación", () => {
+    const conCodigos = { codigo: "7750000000100", nombre: "Amoxicilina 500", laboratorio: "Genfar", concentracion: "500 mg", formaFarmaceutica: "Cápsula", registroSanitario: "EE-01234", registroVence: "2030-01-31", porcentajeUtilidad: 40, costoUnitario: 1, precioUnidad: 2, blister: { factor: 10, pvp: 18, codigo: "7750000000101" }, caja: { factor: 100, pvp: 150, codigo: "7750000000102" } };
+    let id: number;
+
+    it("guarda los datos farmacéuticos y la utilidad", async () => {
+      ({ id } = await crearProducto(db, F.admin, esquemaProducto.parse(conCodigos)));
+      const f = (await fichaProducto(db, id))!;
+      expect([f.concentracion, f.formaFarmaceutica, f.registroSanitario, f.registroVence, f.porcentajeUtilidad]).toEqual(["500 mg", "Cápsula", "EE-01234", "2030-01-31", 40]);
+    });
+
+    it("al escanear identifica la presentación y por el código general no fuerza ninguna", async () => {
+      const f = (await fichaProducto(db, id))!;
+      const caja = f.presentaciones.find((p) => p.factor === 100)!;
+      const [r] = await buscarProductos(db, "7750000000102");
+      expect([r.id, r.presentacionEscaneadaId]).toEqual([id, caja.id]);
+      const [g] = await buscarProductos(db, "7750000000100");
+      expect([g.id, g.presentacionEscaneadaId]).toEqual([id, undefined]);
+      expect((await listarStock(db, { q: "7750000000101" })).productos.map((p) => p.id)).toEqual([id]);
+    });
+
+    it("rechaza códigos repetidos dentro del producto y entre productos", async () => {
+      expect(() => esquemaProducto.parse({ ...conCodigos, caja: { ...conCodigos.caja, codigo: conCodigos.blister.codigo } })).toThrow(/código distinto/);
+      const otro = { ...conCodigos, codigo: "7750000000200", blister: null, caja: null };
+      await expect(crearProducto(db, F.admin, esquemaProducto.parse({ ...otro, codigo: "7750000000101" }))).rejects.toThrow(/ya pertenece/);
+      await expect(crearProducto(db, F.admin, esquemaProducto.parse({ ...otro, blister: { factor: 10, pvp: 18, codigo: "7750000000100" } }))).rejects.toThrow(/ya pertenece/);
+    });
+
+    it("permite intercambiar códigos y libera el de la presentación quitada", async () => {
+      await editarProducto(db, F.admin, id, esquemaProducto.parse({ ...conCodigos, blister: { factor: 10, pvp: 18, codigo: "7750000000102" }, caja: { factor: 100, pvp: 150, codigo: "7750000000101" } }));
+      expect((await fichaProducto(db, id))!.presentaciones.map((p) => p.codigo)).toEqual([null, "7750000000102", "7750000000101"]);
+      await editarProducto(db, F.admin, id, esquemaProducto.parse({ ...conCodigos, blister: { factor: 10, pvp: 18, codigo: "7750000000102" }, caja: null }));
+      const { id: nuevo } = await crearProducto(db, F.admin, esquemaProducto.parse({ ...conCodigos, codigo: "7750000000300", blister: { factor: 10, pvp: 18, codigo: "7750000000101" }, caja: null }));
+      expect(nuevo).toBeGreaterThan(id);
+    });
+  });
+
+  it("«bajo mínimo» cuenta solo el stock vigente, igual que la tabla", async () => {
+    const { id } = await crearProducto(db, F.admin, esquemaProducto.parse({ ...datos, codigo: "7750000000400", nombre: "Solo vencido", blister: null, caja: null, stockMinimo: 5 }));
+    await db.insert(schema.lote).values({ productoId: id, numero: "VENC1", vencimiento: sumarDias(hoy(), -1), costoUnitario: 1, cantidad: 100, estado: "VENCIDO" });
+    expect((await listarStock(db, { q: "Solo vencido", filtro: "bajo" })).productos.map((p) => p.id)).toEqual([id]);
+  });
+
+  it("«por vencer» trae los lotes vigentes dentro de 90 días", async () => {
+    const { id } = await crearProducto(db, F.admin, esquemaProducto.parse({ ...datos, codigo: "7750000000500", nombre: "Vence pronto", blister: null, caja: null }));
+    await db.insert(schema.lote).values({ productoId: id, numero: "PRONTO1", vencimiento: sumarDias(hoy(), 30), costoUnitario: 1, cantidad: 10 });
+    expect((await listarStock(db, { q: "Vence pronto", filtro: "vencer" })).productos.map((p) => p.id)).toEqual([id]);
+    expect((await listarStock(db, { q: "Solo vencido", filtro: "vencer" })).productos).toEqual([]);
   });
 });

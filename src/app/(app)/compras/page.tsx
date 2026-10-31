@@ -62,7 +62,7 @@ function Recibir({ alTerminar }: { alTerminar: () => void }) {
         </div>
       </Tarjeta>
       <Tarjeta titulo="Lo que llegó" accion={<span className="text-[12.5px] text-ink-3">Sin costos: los registra el administrador</span>}>
-        <div className="px-5 pb-3"><BuscadorProducto alElegir={(p) => setLineas((ls) => [...ls, { prod: p, presentacionId: p.presentaciones[p.presentaciones.length - 1].id, cantidad: "1", numeroLote: "", vencimiento: "" }])} placeholder="Agregar producto recibido" /></div>
+        <div className="px-5 pb-3"><BuscadorProducto alElegir={(p) => setLineas((ls) => [...ls, { prod: p, presentacionId: p.presentacionEscaneadaId ?? p.presentaciones[p.presentaciones.length - 1].id, cantidad: "1", numeroLote: "", vencimiento: "" }])} placeholder="Agregar producto recibido" /></div>
         {lineas.length ? (
           <div className="overflow-x-auto"><table className="tabla">
             <thead><tr><th>Producto</th><th>Presentación</th><th className="num">Cantidad</th><th>Lote</th><th>Vencimiento</th><th /></tr></thead>

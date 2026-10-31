@@ -32,6 +32,9 @@ export const producto = pgTable("producto", {
   nombre: text("nombre").notNull(),
   principioActivo: text("principio_activo"),
   concentracion: text("concentracion"),
+  formaFarmaceutica: text("forma_farmaceutica"),
+  registroSanitario: text("registro_sanitario"),
+  registroVence: date("registro_vence", { mode: "string" }),
   laboratorio: text("laboratorio"),
   categoriaId: integer("categoria_id").references(() => categoria.id),
   condicionVenta: condicionEnum("condicion_venta").notNull().default("LIBRE"),
@@ -48,6 +51,7 @@ export const presentacion = pgTable("presentacion", {
   nombre: text("nombre").notNull(),
   factor: integer("factor").notNull(),
   pvp: money("pvp").notNull(),
+  codigo: text("codigo").unique(),
   activo: boolean("activo").notNull().default(true),
 }, (t) => [index("presentacion_producto_idx").on(t.productoId)]);
 

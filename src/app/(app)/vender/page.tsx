@@ -9,7 +9,7 @@ import { useUsuario } from "@/components/shell";
 type Pres = { id: number; nombre: string; factor: number; pvp: number };
 type Prod = {
   id: number; codigo: string; nombre: string; principioActivo: string | null; laboratorio: string | null; condicionVenta: string; ubicacion: string | null;
-  stockVigente: number; proximoVencimiento: string | null; enPromocion: boolean; campana: { porcentaje: number } | null; presentaciones: Pres[]; mensaje?: string | null;
+  stockVigente: number; proximoVencimiento: string | null; enPromocion: boolean; campana: { porcentaje: number } | null; presentaciones: Pres[]; presentacionEscaneadaId?: number; mensaje?: string | null;
 };
 type Item = { prod: Prod; presId: number; cantidad: number; descuentoPct: number; origen: "DIRECTA" | "SUGERENCIA" };
 type Medio = "EFECTIVO" | "YAPE" | "PLIN" | "TARJETA" | "TRANSFERENCIA";
@@ -41,15 +41,20 @@ export default function Vender() {
   const [errorCobro, setErrorCobro] = useState<string | null>(null);
   const [resultado, setResultado] = useState<Resultado | null>(null);
   const buscador = useRef<HTMLInputElement>(null);
+  const consulta = useRef("");
 
   // Búsqueda con espera corta
   useEffect(() => {
     const t = q.trim();
     if (!t) { setResultados([]); return; }
+    let vigente = true;
     const h = setTimeout(async () => {
-      try { setResultados(await api<Prod[]>(`/api/productos?buscar=${encodeURIComponent(t)}`)); setActivo(0); } catch { /* sin resultados */ }
+      try {
+        const r = await api<Prod[]>(`/api/productos?buscar=${encodeURIComponent(t)}`);
+        if (vigente) { consulta.current = t; setResultados(r); setActivo(0); }
+      } catch { /* sin resultados */ }
     }, 160);
-    return () => clearTimeout(h);
+    return () => { vigente = false; clearTimeout(h); };
   }, [q]);
 
   // Sugerencias complementarias según el carrito
@@ -59,7 +64,7 @@ export default function Vender() {
     api<Prod[]>("/api/productos/sugerencias", { cuerpo: { ids: idsCarrito.split(",").map(Number) } }).then(setSugerencias).catch(() => setSugerencias([]));
   }, [idsCarrito]);
 
-  const agregar = useCallback((prod: Prod, presId?: number, origen: "DIRECTA" | "SUGERENCIA" = "DIRECTA") => {
+  const sumarAlCarrito = useCallback((prod: Prod, presId?: number, origen: "DIRECTA" | "SUGERENCIA" = "DIRECTA") => {
     const pid = presId ?? prod.presentaciones[0]?.id;
     if (!pid) return;
     setItems((xs) => {
@@ -67,9 +72,25 @@ export default function Vender() {
       if (i >= 0) return xs.map((x, k) => (k === i ? { ...x, cantidad: x.cantidad + 1 } : x));
       return [...xs, { prod, presId: pid, cantidad: 1, descuentoPct: 0, origen }];
     });
+  }, []);
+
+  const agregar = useCallback((prod: Prod, presId?: number, origen: "DIRECTA" | "SUGERENCIA" = "DIRECTA") => {
+    sumarAlCarrito(prod, presId, origen);
     setQ(""); setResultados([]);
     buscador.current?.focus();
-  }, []);
+  }, [sumarAlCarrito]);
+
+  // El lector envía Enter antes de que termine la búsqueda: el campo se libera ya para el siguiente escaneo
+  // y solo un código exacto entra al carrito; un texto a medio buscar vuelve al campo.
+  const escanear = async (t: string) => {
+    setQ(""); setResultados([]);
+    try {
+      const r = await api<Prod[]>(`/api/productos?buscar=${encodeURIComponent(t)}`);
+      const exacto = r.find((x) => x.codigo === t || x.presentacionEscaneadaId);
+      if (exacto) sumarAlCarrito(exacto, exacto.presentacionEscaneadaId);
+      else setQ((actual) => actual || t);
+    } catch { setQ((actual) => actual || t); }
+  };
 
   const lineas = useMemo(() => items.map((it) => {
     const p = it.prod.presentaciones.find((x) => x.id === it.presId)!;
@@ -163,7 +184,11 @@ export default function Vender() {
               onKeyDown={(e) => {
                 if (e.key === "ArrowDown") { e.preventDefault(); setActivo((a) => Math.min(a + 1, resultados.length - 1)); }
                 if (e.key === "ArrowUp") { e.preventDefault(); setActivo((a) => Math.max(a - 1, 0)); }
-                if (e.key === "Enter" && resultados[activo]) { e.preventDefault(); agregar(resultados[activo]); }
+                if (e.key === "Enter" && q.trim()) {
+                  e.preventDefault();
+                  if (resultados[activo] && consulta.current === q.trim()) agregar(resultados[activo], resultados[activo].presentacionEscaneadaId);
+                  else escanear(q.trim());
+                }
                 if (e.key === "Escape") { setQ(""); setResultados([]); }
               }}
               placeholder="Escanea el código o escribe nombre, principio activo o síntoma"
