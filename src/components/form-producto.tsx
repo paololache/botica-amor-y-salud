@@ -2,11 +2,12 @@
 import { useState } from "react";
 import { api, soles } from "@/lib/cliente";
 import { IGV, precioSugerido } from "@/lib/util";
-import { Boton, Campo, Entrada, Modal, Selector, useAviso } from "@/components/ui";
+import { Boton, Campo, Entrada, EntradaNumero, Modal, Selector, useAviso } from "@/components/ui";
+import { SelectorLaboratorio, type Laboratorio } from "@/components/selector-laboratorio";
 
 export type ProductoEditable = {
   id: number; codigo: string; nombre: string; principioActivo: string | null; concentracion: string | null; formaFarmaceutica: string | null; registroSanitario: string | null; registroVence: string | null;
-  laboratorio: string | null; categoriaId: number | null; condicionVenta: string; stockMinimo: number; costoPromedio?: number; porcentajeUtilidad?: number; tieneKardex: boolean;
+  laboratorioId: number | null; laboratorio: string | null; categoriaId: number | null; condicionVenta: string; stockMinimo: number; costoPromedio?: number; porcentajeUtilidad?: number; tieneKardex: boolean;
   presentaciones: { nombre: string; factor: number; pvp: number; codigo: string | null }[];
 };
 
@@ -19,12 +20,12 @@ function margen(costo: number, pvp: number) {
   return neto > 0 ? ((neto - costo) / neto) * 100 : 0;
 }
 
-export function FormProducto({ producto: p, categorias, alCerrar, alGuardar }: { producto: ProductoEditable | null; categorias: { id: number; nombre: string }[]; alCerrar: () => void; alGuardar: () => void }) {
+export function FormProducto({ producto: p, categorias, laboratorios, alCerrar, alGuardar }: { producto: ProductoEditable | null; categorias: { id: number; nombre: string }[]; laboratorios: Laboratorio[]; alCerrar: () => void; alGuardar: () => void }) {
   const avisar = useAviso();
   const b0 = p?.presentaciones.find((x) => x.nombre.startsWith("Blíster"));
   const c0 = p?.presentaciones.find((x) => x.nombre.startsWith("Caja"));
   const [f, setF] = useState({
-    codigo: p?.codigo ?? "", nombre: p?.nombre ?? "", laboratorio: p?.laboratorio ?? "", principioActivo: p?.principioActivo ?? "",
+    codigo: p?.codigo ?? "", nombre: p?.nombre ?? "", principioActivo: p?.principioActivo ?? "",
     concentracion: p?.concentracion ?? "", formaFarmaceutica: p?.formaFarmaceutica ?? "", registroSanitario: p?.registroSanitario ?? "", registroVence: p?.registroVence ?? "",
     categoriaId: p?.categoriaId ? String(p.categoriaId) : "", condicionVenta: p?.condicionVenta ?? "LIBRE", stockMinimo: String(p?.stockMinimo ?? 0),
     costo: p?.costoPromedio !== undefined ? String(p.costoPromedio) : "", utilidad: String(p?.porcentajeUtilidad ?? 30), pvp: p ? String(p.presentaciones.find((x) => x.factor === 1)?.pvp ?? "") : "",
@@ -34,7 +35,11 @@ export function FormProducto({ producto: p, categorias, alCerrar, alGuardar }: {
   const [manual, setManual] = useState({ pvp: !!p, bPvp: !!b0, cPvp: !!c0 });
   const [error, setError] = useState<string | null>(null);
   const [ocupado, setOcupado] = useState(false);
-  const cambiar = (k: keyof typeof f, v: string) => setF((x) => ({ ...x, [k]: v }));
+  const [confirmarDuplicado, setConfirmarDuplicado] = useState(false);
+  const [lab, setLab] = useState<Laboratorio | null>(p?.laboratorioId && p.laboratorio ? { id: p.laboratorioId, nombre: p.laboratorio } : null);
+  const [catalogo, setCatalogo] = useState(laboratorios);
+  const elegirLab = (l: Laboratorio | null) => { setLab(l); setConfirmarDuplicado(false); setError(null); if (l && !catalogo.some((x) => x.id === l.id)) setCatalogo((c) => [...c, l].sort((a, b) => a.nombre.localeCompare(b.nombre))); };
+  const cambiar =(k: keyof typeof f, v: string) => setF((x) => ({ ...x, [k]: v }));
   const costo = num(f.costo);
   const sugerido = (factor: number) => (costo && factor ? String(precioSugerido(costo, factor, num(f.utilidad))) : "");
   const precio = (k: keyof typeof manual, factor: number) => (manual[k] ? f[k] : sugerido(factor));
@@ -54,16 +59,16 @@ export function FormProducto({ producto: p, categorias, alCerrar, alGuardar }: {
     const empaque = (factor: string, precio: string, codigo: string) => (factor.trim() || precio.trim() || codigo ? { factor: num(factor), pvp: num(precio), codigo: codigo || null } : null);
     try {
       const cuerpo = {
-        codigo: f.codigo, nombre: f.nombre, laboratorio: f.laboratorio, principioActivo: f.principioActivo || null, concentracion: f.concentracion || null, formaFarmaceutica: f.formaFarmaceutica || null,
+        codigo: f.codigo, nombre: f.nombre, laboratorioId: lab?.id, principioActivo: f.principioActivo || null, concentracion: f.concentracion || null, formaFarmaceutica: f.formaFarmaceutica || null,
         registroSanitario: f.registroSanitario || null, registroVence: f.registroVence || null, categoriaId: f.categoriaId ? Number(f.categoriaId) : null,
         condicionVenta: f.condicionVenta, stockMinimo: Math.trunc(num(f.stockMinimo)), costoUnitario: costo, porcentajeUtilidad: num(f.utilidad), precioUnidad: num(pvp),
-        blister: empaque(f.bFactor, bPvp, f.bCodigo), caja: empaque(f.cFactor, cPvp, f.cCodigo),
+        blister: empaque(f.bFactor, bPvp, f.bCodigo), caja: empaque(f.cFactor, cPvp, f.cCodigo), confirmarDuplicado,
       };
       if (p) await api(`/api/productos/${p.id}`, { metodo: "PATCH", cuerpo });
       else await api("/api/productos", { cuerpo });
       avisar("ok", p ? "Producto actualizado." : `${f.nombre} creado. El stock entra al registrar su primera compra.`);
       alGuardar();
-    } catch (e) { setError((e as Error).message); } finally { setOcupado(false); }
+    } catch (e) { setError((e as Error).message); if ((e as { codigo?: string }).codigo === "POSIBLE_DUPLICADO") setConfirmarDuplicado(true); } finally { setOcupado(false); }
   };
 
   return (
@@ -71,8 +76,8 @@ export function FormProducto({ producto: p, categorias, alCerrar, alGuardar }: {
       <div className="space-y-5">
         <div className="grid sm:grid-cols-2 gap-3">
           <Campo etiqueta="Código de barras" ayuda="Al escanearlo se vende por unidad"><Entrada autoFocus value={f.codigo} onChange={(e) => cambiar("codigo", e.target.value.trim())} placeholder="7750000000011" /></Campo>
-          <Campo etiqueta="Laboratorio"><Entrada value={f.laboratorio} onChange={(e) => cambiar("laboratorio", e.target.value)} placeholder="IQ Farma" /></Campo>
-          <Campo etiqueta="Nombre del producto" className="sm:col-span-2"><Entrada value={f.nombre} onChange={(e) => cambiar("nombre", e.target.value)} placeholder="Dolofenex Forte cápsula" /></Campo>
+          <SelectorLaboratorio laboratorios={catalogo} valor={lab} alElegir={elegirLab} />
+          <Campo etiqueta="Nombre del producto" className="sm:col-span-2"><Entrada value={f.nombre} onChange={(e) => { setConfirmarDuplicado(false); setError(null); cambiar("nombre", e.target.value); }} placeholder="Dolofenex Forte cápsula" /></Campo>
           <Campo etiqueta="Principio activo (opcional)" ayuda="Permite buscar sustitutos con F9 en Vender"><Entrada value={f.principioActivo} onChange={(e) => cambiar("principioActivo", e.target.value)} /></Campo>
           <Campo etiqueta="Concentración (opcional)"><Entrada value={f.concentracion} onChange={(e) => cambiar("concentracion", e.target.value)} placeholder="500 mg" /></Campo>
           <Campo etiqueta="Forma farmacéutica (opcional)"><Selector value={f.formaFarmaceutica} onChange={(e) => cambiar("formaFarmaceutica", e.target.value)}><option value="">Sin especificar</option>{FORMAS.map((x) => <option key={x} value={x}>{x}</option>)}</Selector></Campo>
@@ -80,21 +85,21 @@ export function FormProducto({ producto: p, categorias, alCerrar, alGuardar }: {
           <Campo etiqueta="Vencimiento del registro (opcional)"><Entrada type="date" value={f.registroVence} onChange={(e) => cambiar("registroVence", e.target.value)} /></Campo>
           <Campo etiqueta="Categoría (opcional)"><Selector value={f.categoriaId} onChange={(e) => cambiar("categoriaId", e.target.value)}><option value="">Sin categoría</option>{categorias.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}</Selector></Campo>
           <Campo etiqueta="Condición de venta"><Selector value={f.condicionVenta} onChange={(e) => cambiar("condicionVenta", e.target.value)}><option value="LIBRE">Venta libre</option><option value="RECETA">Con receta</option><option value="RECETA_RETENIDA">Receta retenida</option></Selector></Campo>
-          <Campo etiqueta="Stock mínimo (unidades)"><Entrada inputMode="numeric" value={f.stockMinimo} onChange={(e) => cambiar("stockMinimo", e.target.value.replace(/\D/g, ""))} /></Campo>
+          <Campo etiqueta="Stock mínimo (unidades)"><EntradaNumero inputMode="numeric" value={f.stockMinimo} onChange={(e) => cambiar("stockMinimo", e.target.value.replace(/\D/g, ""))} /></Campo>
         </div>
         <fieldset className="rounded-2xl border border-foil-2 p-4">
           <legend className="px-1 text-[13px] font-semibold">Costo y precios de venta (con IGV)</legend>
           <div className="grid sm:grid-cols-3 gap-3">
-            <Campo etiqueta="Costo unitario (sin IGV)" ayuda={p?.tieneKardex ? "Lo calculan las compras (costo promedio)" : "Se actualiza con cada compra"}><Entrada inputMode="decimal" disabled={p?.tieneKardex} value={f.costo} onChange={(e) => cambiar("costo", decimal(e.target.value))} placeholder="0.00" /></Campo>
-            <Campo etiqueta="Utilidad sobre el costo (%)" ayuda="Base del precio sugerido"><Entrada inputMode="decimal" value={f.utilidad} onChange={(e) => cambiar("utilidad", decimal(e.target.value))} placeholder="30" /></Campo>
-            <Campo etiqueta="Precio por unidad" ayuda={ayudaPrecio("pvp", pvp, 1)}><Entrada inputMode="decimal" value={pvp} onChange={(e) => escribirPrecio("pvp", e.target.value)} placeholder="0.00" /></Campo>
+            <Campo etiqueta="Costo unitario (sin IGV)" ayuda={p?.tieneKardex ? "Lo calculan las compras (costo promedio)" : "Se actualiza con cada compra"}><EntradaNumero inputMode="decimal" disabled={p?.tieneKardex} value={f.costo} onChange={(e) => cambiar("costo", decimal(e.target.value))} placeholder="0.00" /></Campo>
+            <Campo etiqueta="Utilidad sobre el costo (%)" ayuda="Base del precio sugerido"><EntradaNumero inputMode="decimal" value={f.utilidad} onChange={(e) => cambiar("utilidad", decimal(e.target.value))} placeholder="30" /></Campo>
+            <Campo etiqueta="Precio por unidad" ayuda={ayudaPrecio("pvp", pvp, 1)}><EntradaNumero inputMode="decimal" value={pvp} onChange={(e) => escribirPrecio("pvp", e.target.value)} placeholder="0.00" /></Campo>
           </div>
           <div className="grid sm:grid-cols-[110px_minmax(0,1fr)_minmax(0,1fr)] gap-3 mt-3">
-            <Campo etiqueta="Unid. por blíster"><Entrada inputMode="numeric" value={f.bFactor} onChange={(e) => cambiar("bFactor", e.target.value.replace(/\D/g, ""))} placeholder="10" /></Campo>
-            <Campo etiqueta="Precio del blíster (opcional)" ayuda={ayudaPrecio("bPvp", bPvp, num(f.bFactor))}><Entrada inputMode="decimal" value={bPvp} onChange={(e) => escribirPrecio("bPvp", e.target.value)} placeholder="0.00" /></Campo>
+            <Campo etiqueta="Unid. por blíster"><EntradaNumero inputMode="numeric" value={f.bFactor} onChange={(e) => cambiar("bFactor", e.target.value.replace(/\D/g, ""))} placeholder="10" /></Campo>
+            <Campo etiqueta="Precio del blíster (opcional)" ayuda={ayudaPrecio("bPvp", bPvp, num(f.bFactor))}><EntradaNumero inputMode="decimal" value={bPvp} onChange={(e) => escribirPrecio("bPvp", e.target.value)} placeholder="0.00" /></Campo>
             <Campo etiqueta="Código del blíster (opcional)"><Entrada value={f.bCodigo} onChange={(e) => cambiar("bCodigo", e.target.value.trim())} /></Campo>
-            <Campo etiqueta="Unid. por caja"><Entrada inputMode="numeric" value={f.cFactor} onChange={(e) => cambiar("cFactor", e.target.value.replace(/\D/g, ""))} placeholder="100" /></Campo>
-            <Campo etiqueta="Precio de la caja (opcional)" ayuda={ayudaPrecio("cPvp", cPvp, num(f.cFactor))}><Entrada inputMode="decimal" value={cPvp} onChange={(e) => escribirPrecio("cPvp", e.target.value)} placeholder="0.00" /></Campo>
+            <Campo etiqueta="Unid. por caja"><EntradaNumero inputMode="numeric" value={f.cFactor} onChange={(e) => cambiar("cFactor", e.target.value.replace(/\D/g, ""))} placeholder="100" /></Campo>
+            <Campo etiqueta="Precio de la caja (opcional)" ayuda={ayudaPrecio("cPvp", cPvp, num(f.cFactor))}><EntradaNumero inputMode="decimal" value={cPvp} onChange={(e) => escribirPrecio("cPvp", e.target.value)} placeholder="0.00" /></Campo>
             <Campo etiqueta="Código de la caja (opcional)"><Entrada value={f.cCodigo} onChange={(e) => cambiar("cCodigo", e.target.value.trim())} /></Campo>
           </div>
         </fieldset>
@@ -102,7 +107,7 @@ export function FormProducto({ producto: p, categorias, alCerrar, alGuardar }: {
         {error ? <p className="text-sm text-rojo" role="alert">{error}</p> : null}
         <div className="flex justify-end gap-2">
           <Boton variante="fantasma" onClick={alCerrar}>Cancelar</Boton>
-          <Boton variante="amor" cargando={ocupado} disabled={!f.codigo || !f.nombre.trim() || !f.laboratorio.trim() || !(num(pvp) > 0) || f.costo === ""} onClick={guardar}>{p ? "Guardar cambios" : "Crear producto"}</Boton>
+          <Boton variante="amor" cargando={ocupado} disabled={!f.codigo || !f.nombre.trim() || !lab || !(num(pvp) > 0) || f.costo === ""} onClick={guardar}>{confirmarDuplicado ? "Es un producto distinto, guardar" : p ? "Guardar cambios" : "Crear producto"}</Boton>
         </div>
       </div>
     </Modal>

@@ -1,6 +1,8 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+export const EVENTO_ERROR = "botica:error-datos";
+
 export class ErrorApi extends Error {
   constructor(public codigo: string, mensaje: string, public status: number) { super(mensaje); }
 }
@@ -31,7 +33,11 @@ export function useDatos<T>(ruta: string | null) {
       const d = await api<T>(ruta);
       if (actual.current === ruta) { setDatos(d); setError(null); }
     } catch (e) {
-      if (actual.current === ruta) setError((e as Error).message);
+      if (actual.current === ruta) {
+        setError((e as Error).message);
+        // Muchas pantallas muestran "cargando" hasta tener datos: el aviso evita que un error quede invisible.
+        window.dispatchEvent(new CustomEvent(EVENTO_ERROR, { detail: (e as Error).message }));
+      }
     } finally {
       if (actual.current === ruta) setCargando(false);
     }

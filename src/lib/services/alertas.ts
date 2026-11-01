@@ -2,7 +2,7 @@ import { and, eq, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { schema, type Db } from "@/db";
 import type { Sesion } from "../auth";
-import type { Rol } from "../permisos";
+import { tieneRol, type Rol } from "../permisos";
 import { filas } from "../sqlrows";
 import { diasEntre, ErrorNegocio, hoy as hoyLima, sumarDias } from "../util";
 import { parametros } from "./parametros";
@@ -29,8 +29,16 @@ export const TIPOS: Record<TipoAlerta, { nombre: string; roles: Rol[]; grupo: "s
 
 type Nueva = { clave: string; tipo: TipoAlerta; severidad: "CRITICA" | "ALTA" | "INFO"; titulo: string; detalle: string; referenciaTipo?: string; referenciaId?: number; valor?: number };
 
-/** Recalcula todas las alertas con consultas agregadas (pensado para miles de productos y lotes). */
+/** Recalcula todas las alertas; el candado evita alertas duplicadas si varios paneles se abren a la vez. */
 export async function evaluarAlertas(db: Db) {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(727001)`);
+    return calcularAlertas(tx);
+  });
+}
+
+/** Consultas agregadas, pensadas para miles de productos y lotes. */
+async function calcularAlertas(db: Db) {
   const hoy = hoyLima();
   const p = await parametros(db);
   const nuevas: Nueva[] = [];
@@ -90,7 +98,7 @@ export async function evaluarAlertas(db: Db) {
     select id, nombre, fin::text as fin from campana where estado in ('ACTIVA','PROGRAMADA') and fin >= ${hoy} and fin <= ${sumarDias(hoy, p.aviso_campana_dias)}`);
   for (const c of camps) nuevas.push({ clave: `CAMP:c:${c.id}`, tipo: "CAMPANA_POR_VENCER", severidad: "INFO", titulo: c.nombre, detalle: `Termina el ${String(c.fin).slice(0, 10)}`, referenciaTipo: "campana", referenciaId: c.id });
 
-  const sal = await filas<{ id: number; descripcion: string }>(db, sql`select id, descripcion from movimiento_inventario where estado = 'PENDIENTE' and fecha < now() - interval '24 hours'`);
+  const sal = await filas<{ id: number; descripcion: string }>(db, sql`select id, descripcion from movimiento_inventario where estado = 'PENDIENTE'`);
   for (const s of sal) nuevas.push({ clave: `SAL:m:${s.id}`, tipo: "SALIDA_PENDIENTE", severidad: "INFO", titulo: `Movimiento MOV-${String(s.id).padStart(5, "0")}`, detalle: s.descripcion, referenciaTipo: "movimiento", referenciaId: s.id });
 
   const existentes = await db.select().from(alerta).where(ne(alerta.estado, "CERRADA"));
@@ -101,8 +109,8 @@ export async function evaluarAlertas(db: Db) {
     vistas.add(n.clave);
     const e = porClave.get(n.clave);
     if (!e) insertar.push({ ...n, referenciaTipo: n.referenciaTipo ?? null, referenciaId: n.referenciaId ?? null, valor: n.valor ?? null });
-    else if (e.tipo !== n.tipo || e.severidad !== n.severidad || e.detalle !== n.detalle)
-      await db.update(alerta).set({ tipo: n.tipo, severidad: n.severidad, detalle: n.detalle, valor: n.valor ?? null, actualizadaEn: new Date(), ...(e.tipo !== n.tipo ? { estado: "ABIERTA" } : {}) }).where(eq(alerta.id, e.id));
+    else if (e.tipo !== n.tipo || e.severidad !== n.severidad || e.titulo !== n.titulo || e.detalle !== n.detalle)
+      await db.update(alerta).set({ tipo: n.tipo, severidad: n.severidad, titulo: n.titulo, detalle: n.detalle, valor: n.valor ?? null, actualizadaEn: new Date(), ...(e.tipo !== n.tipo ? { estado: "ABIERTA" } : {}) }).where(eq(alerta.id, e.id));
   }
   for (let i = 0; i < insertar.length; i += 500) await db.insert(alerta).values(insertar.slice(i, i + 500));
   const cerrar = existentes.filter((e) => !vistas.has(e.clave)).map((e) => e.id);
@@ -110,12 +118,12 @@ export async function evaluarAlertas(db: Db) {
   return { evaluadas: nuevas.length, nuevas: insertar.length, cerradas: cerrar.length };
 }
 
-function tiposDeRol(rol: Rol): TipoAlerta[] {
-  return (Object.keys(TIPOS) as TipoAlerta[]).filter((t) => TIPOS[t].roles.includes(rol));
+function tiposDeRoles(roles: readonly Rol[]): TipoAlerta[] {
+  return (Object.keys(TIPOS) as TipoAlerta[]).filter((t) => tieneRol(roles, ...TIPOS[t].roles));
 }
 
-export async function alertasDelRol(db: Db, rol: Rol, opciones: { tipo?: string; limite?: number } = {}) {
-  const tipos = tiposDeRol(rol);
+export async function alertasDelRol(db: Db, roles: readonly Rol[], opciones: { tipo?: string; limite?: number } = {}) {
+  const tipos = tiposDeRoles(roles);
   if (!tipos.length) return { conteos: [], alertas: [] };
   const visibles = and(eq(alerta.estado, "ABIERTA"), inArray(alerta.tipo, tipos), or(isNull(alerta.pospuestaHasta), lt(alerta.pospuestaHasta, new Date())));
   const conteo = await db.select({ tipo: alerta.tipo, n: sql<number>`count(*)`.mapWith(Number), criticas: sql<number>`sum(case when ${alerta.severidad} = 'CRITICA' then 1 else 0 end)`.mapWith(Number) })
@@ -137,7 +145,7 @@ export const esquemaAtencion = z.object({
 export async function atenderAlerta(db: Db, user: Sesion, id: number, input: z.infer<typeof esquemaAtencion>) {
   const [a] = await db.select().from(alerta).where(eq(alerta.id, id));
   if (!a || a.estado === "CERRADA") throw new ErrorNegocio("NO_EXISTE", "La alerta ya no está abierta.", 404);
-  if (!TIPOS[a.tipo as TipoAlerta]?.roles.includes(user.rol)) throw new ErrorNegocio("SIN_PERMISO", "Esta alerta corresponde a otro rol.", 403);
+  if (!tieneRol(user.roles, ...(TIPOS[a.tipo as TipoAlerta]?.roles ?? []))) throw new ErrorNegocio("SIN_PERMISO", "Esta alerta corresponde a otro rol.", 403);
   let documento: { tipo: string; id: number } | null = null;
   if (input.accion === "POSPONER") {
     if (!input.comentario?.trim()) throw new ErrorNegocio("COMENTARIO", "Escribe por qué la pospones.");

@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { use, useState } from "react";
+import { Fragment, use, useState } from "react";
 import { Printer, ArrowLeft } from "lucide-react";
 import { api, useDatos, soles, fechaHora } from "@/lib/cliente";
 import { Boton, Cargando, Entrada, Insignia, Tarjeta, useAviso } from "@/components/ui";
@@ -60,7 +60,7 @@ export default function ReporteCierre({ params }: { params: Promise<{ id: string
           <section>
             <h2 className="font-display font-semibold text-[15px] mb-2">Resumen del turno</h2>
             {fila("Fondo inicial", soles(datos.fondoInicial))}
-            {datos.ventas.porComprobante.map((p) => fila(`${p.tipo === "NOTA_VENTA" ? "Notas de venta" : p.tipo === "BOLETA" ? "Boletas" : "Facturas"} (${p.cantidad})`, soles(p.total)))}
+            {datos.ventas.porComprobante.map((p) => <Fragment key={p.tipo}>{fila(`${p.tipo === "NOTA_VENTA" ? "Notas de venta" : p.tipo === "BOLETA" ? "Boletas" : "Facturas"} (${p.cantidad})`, soles(p.total))}</Fragment>)}
             {fila("Ingresos de caja", soles(ingresos))}
             {fila("Egresos de caja", `− ${soles(egresos)}`)}
             {fila(`Anulaciones (${datos.anuladas.cantidad})`, soles(datos.anuladas.total))}
@@ -89,7 +89,7 @@ export default function ReporteCierre({ params }: { params: Promise<{ id: string
           <div><p className="text-ink-2 font-semibold text-[12.5px]">Validado por</p><p className="mt-1">{s.validadoPor ?? "No requirió validación"}</p></div>
         </section>
         <div className="hidden print:flex gap-16 mt-16 text-sm text-ink-2"><div className="border-t border-ink-3 pt-2 w-56 text-center">Firma del cajero</div><div className="border-t border-ink-3 pt-2 w-56 text-center">Firma del administrador</div></div>
-        {s.estado === "EN_CIERRE" && u.rol === "ADMIN" ? (
+        {s.estado === "EN_CIERRE" && u.roles.includes("ADMIN") ? (
           <div className="no-imprimir mt-8 rounded-2xl bg-ambar-claro p-5">
             <p className="font-semibold text-[#8a5b00]">Este cierre espera tu validación</p>
             <div className="flex gap-2 mt-3">

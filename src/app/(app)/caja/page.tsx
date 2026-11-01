@@ -3,7 +3,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Lock, History, Trash, ShieldAlert } from "lucide-react";
 import { api, useDatos, soles, fechaHora } from "@/lib/cliente";
-import { Boton, Campo, Entrada, Encabezado, Cargando, Insignia, Modal, Selector, Tarjeta, useAviso } from "@/components/ui";
+import { Boton, Campo, Entrada, EntradaNumero, Encabezado, Cargando, Insignia, Modal, Selector, Tarjeta, useAviso } from "@/components/ui";
 import { ContadorEfectivo, totalDe } from "@/components/contador";
 import { useUsuario } from "@/components/shell";
 
@@ -108,7 +108,7 @@ export default function Caja() {
   const historial = (
     <>
       <Link href="/caja/historial"><Boton variante="borde"><History size={16} /> Cierres anteriores</Boton></Link>
-      {u.rol === "ADMIN" ? <Link href="/caja/eliminaciones"><Boton variante="borde"><ShieldAlert size={16} /> Eliminaciones</Boton></Link> : null}
+      {u.roles.includes("ADMIN") ? <Link href="/caja/eliminaciones"><Boton variante="borde"><ShieldAlert size={16} /> Eliminaciones</Boton></Link> : null}
     </>
   );
 
@@ -216,9 +216,9 @@ export default function Caja() {
               <ContadorEfectivo conteo={conteo} alCambiar={setConteo} />
               <div className="space-y-3">
                 {DIGITALES.map((m) => (
-                  <Campo key={m} etiqueta={NOMBRE_MEDIO[m]} ayuda={esperado ? `Según el sistema: ${soles(esperado[m])}` : undefined}><Entrada inputMode="decimal" placeholder="0.00" value={virt[m]} onChange={(e) => setVirt({ ...virt, [m]: e.target.value.replace(",", ".") })} /></Campo>
+                  <Campo key={m} etiqueta={NOMBRE_MEDIO[m]} ayuda={esperado ? `Según el sistema: ${soles(esperado[m])}` : undefined}><EntradaNumero inputMode="decimal" placeholder="0.00" value={virt[m]} onChange={(e) => setVirt({ ...virt, [m]: e.target.value.replace(",", ".") })} /></Campo>
                 ))}
-                <Campo etiqueta="Efectivo que queda como fondo" ayuda={`Se retira ${soles(Math.max(0, totalDe(conteo) - (Number(fondoSig) || 0)))}`}><Entrada inputMode="decimal" value={fondoSig} onChange={(e) => setFondoSig(e.target.value)} /></Campo>
+                <Campo etiqueta="Efectivo que queda como fondo" ayuda={`Se retira ${soles(Math.max(0, totalDe(conteo) - (Number(fondoSig) || 0)))}`}><EntradaNumero inputMode="decimal" value={fondoSig} onChange={(e) => setFondoSig(e.target.value)} /></Campo>
                 <Campo etiqueta="Observación (opcional)"><Entrada value={obs} onChange={(e) => setObs(e.target.value)} placeholder={Math.abs(difTotal) > UMBRAL ? "Explica la diferencia" : undefined} /></Campo>
               </div>
             </div>
@@ -285,7 +285,7 @@ export default function Caja() {
             </div>
             <Campo etiqueta="Concepto"><Selector value={mov.concepto} onChange={(e) => setMov({ ...mov, concepto: e.target.value })}><option value="">Elige un concepto</option>{datos.conceptos[mov.tipo].map((c) => <option key={c}>{c}</option>)}</Selector></Campo>
             <div className="grid grid-cols-2 gap-3">
-              <Campo etiqueta="Monto"><Entrada inputMode="decimal" value={mov.monto} onChange={(e) => setMov({ ...mov, monto: e.target.value.replace(",", ".") })} placeholder="0.00" /></Campo>
+              <Campo etiqueta="Monto"><EntradaNumero inputMode="decimal" value={mov.monto} onChange={(e) => setMov({ ...mov, monto: e.target.value.replace(",", ".") })} placeholder="0.00" /></Campo>
               <Campo etiqueta="Medio"><Selector value={mov.medio} onChange={(e) => setMov({ ...mov, medio: e.target.value })}>{["EFECTIVO", "YAPE", "PLIN", "TARJETA", "TRANSFERENCIA"].map((m) => <option key={m}>{m}</option>)}</Selector></Campo>
             </div>
             <Campo etiqueta="Comprobante (opcional)"><Entrada value={mov.comprobante} onChange={(e) => setMov({ ...mov, comprobante: e.target.value })} placeholder="B001-123" /></Campo>

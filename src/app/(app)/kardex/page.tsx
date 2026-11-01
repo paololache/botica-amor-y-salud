@@ -13,7 +13,7 @@ type K = {
   saldoInicial: { saldoUnidades: number; saldoValorizado?: number }; saldoFinal: { saldoUnidades: number; saldoValorizado?: number }; totales: { entradas: number; salidas: number };
   lineas: { id: number; fecha: string; tipo: string; motivo: string | null; documentoTipo: string; documentoRef: string | null; lote: string | null; vencimiento: string | null; entrada: number; salida: number; costoUnitario?: number; saldoUnidades: number; costoPromedio?: number; saldoValorizado?: number; usuario: string | null }[];
 };
-const TIPO: Record<string, string> = { VENTA: "Venta", ANULACION_VENTA: "Anulación", COMPRA: "Compra", SALIDA: "Salida", ENTRADA: "Entrada", INVENTARIO_INICIAL: "Inventario inicial" };
+const TIPO: Record<string, string> = { VENTA: "Venta", ANULACION_VENTA: "Anulación", COMPRA: "Compra", SALIDA: "Salida", ENTRADA: "Entrada", INVENTARIO_INICIAL: "Inventario inicial", CORRECCION_COSTO: "Corrección de costo", ANULACION_COMPRA: "Anulación de compra" };
 
 function Kardex() {
   const u = useUsuario();

@@ -1,8 +1,10 @@
 import { and, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
+import { monto, texto } from "../validacion";
 import { schema, type Db } from "@/db";
 import type { Sesion } from "../auth";
+import { tieneRol } from "../permisos";
 import { ErrorNegocio, hoy as hoyLima, inicioDiaLima, MEDIOS, r2, sumarDias } from "../util";
 import { asignarFEFO, bloquearProductos, registrarKardex, sumarLote } from "./inventario";
 import { campanaActiva } from "./campanas";
@@ -18,14 +20,14 @@ export const SERIES = { BOLETA: "B001", FACTURA: "F001", NOTA_VENTA: "NV01" } as
 export const esquemaVenta = z.object({
   items: z.array(z.object({
     presentacionId: z.number().int(),
-    cantidad: z.number().int().positive(),
+    cantidad: z.number().int().positive().max(100000),
     descuentoPct: z.number().min(0).max(100).default(0),
     origen: z.enum(["DIRECTA", "SUGERENCIA"]).default("DIRECTA"),
   })).min(1).max(60),
   tipoComprobante: z.enum(["BOLETA", "FACTURA", "NOTA_VENTA"]),
-  cliente: z.object({ tipoDoc: z.enum(["DNI", "RUC"]), numero: z.string(), nombre: z.string().min(2) }).optional(),
-  pagos: z.array(z.object({ medio: z.enum(MEDIOS), monto: z.number().positive() })).min(1),
-  receta: z.object({ medico: z.string().min(3), cmp: z.string().min(3), numero: z.string().min(1) }).optional(),
+  cliente: z.object({ tipoDoc: z.enum(["DNI", "RUC"]), numero: texto(1).max(11), nombre: texto(2) }).optional(),
+  pagos: z.array(z.object({ medio: z.enum(MEDIOS), monto })).min(1),
+  receta: z.object({ medico: texto(3), cmp: texto(3), numero: texto(1) }).optional(),
   autorizacion: z.object({ login: z.string(), password: z.string() }).optional(),
 });
 export type EntradaVenta = z.infer<typeof esquemaVenta>;
@@ -62,10 +64,10 @@ export async function crearVenta(db: Db, user: Sesion, input: EntradaVenta) {
   });
   total = r2(total); descuento = r2(descuento);
 
-  if (requiereAutorizacion && user.rol !== "ADMIN") {
+  if (requiereAutorizacion && !user.roles.includes("ADMIN")) {
     if (!input.autorizacion) throw new ErrorNegocio("REQUIERE_AUTORIZACION", `El descuento supera el ${p.descuento_max_pct}% permitido. Pide la clave de un supervisor.`, 422);
-    const [a] = await db.select().from(usuario).where(eq(usuario.login, input.autorizacion.login));
-    if (!a || a.rol !== "ADMIN" || !(await bcrypt.compare(input.autorizacion.password, a.passwordHash))) throw new ErrorNegocio("CREDENCIALES", "La clave del supervisor no es correcta.", 401);
+    const [a] = await db.select().from(usuario).where(and(eq(usuario.login, input.autorizacion.login), eq(usuario.activo, true)));
+    if (!a || !a.roles.includes("ADMIN") || !(await bcrypt.compare(input.autorizacion.password, a.passwordHash))) throw new ErrorNegocio("CREDENCIALES", "La clave del supervisor no es correcta.", 401);
   }
   if (requiereReceta && !input.receta) throw new ErrorNegocio("REQUIERE_RECETA", "Esta venta incluye un producto con receta: registra médico, CMP y número de receta (RN-03).", 422);
   if (input.tipoComprobante === "FACTURA" && !(input.cliente?.tipoDoc === "RUC" && /^(10|20)\d{9}$/.test(input.cliente.numero)))
@@ -132,7 +134,7 @@ export async function crearVenta(db: Db, user: Sesion, input: EntradaVenta) {
   return { ...resultado, cpeEstado, comisionHoy: mias.hoy, comisionMes: mias.mes };
 }
 
-export const esquemaAnulacion = z.object({ motivo: z.string().min(5) });
+export const esquemaAnulacion = z.object({ motivo: texto(5) });
 
 /** Mismo día: anulación (comunicación de baja). Días posteriores: nota de crédito. Ambas devuelven el stock al lote original (RN-06). */
 export async function anularVenta(db: Db, user: Sesion, ventaId: number, input: z.infer<typeof esquemaAnulacion>) {
@@ -157,7 +159,7 @@ export async function anularVenta(db: Db, user: Sesion, ventaId: number, input: 
 export async function listarVentas(db: Db, user: Sesion, dias = 7) {
   const desde = inicioDiaLima(sumarDias(hoyLima(), -dias + 1));
   const cond = [gte(venta.fecha, desde)];
-  if (!["ADMIN", "CONTADOR"].includes(user.rol)) cond.push(eq(venta.usuarioId, user.id));
+  if (!tieneRol(user.roles, "ADMIN", "CONTADOR")) cond.push(eq(venta.usuarioId, user.id));
   return db.select({
     id: venta.id, serie: venta.serie, numero: venta.numero, fecha: venta.fecha, tipo: venta.tipoComprobante, total: venta.total, costoTotal: venta.costoTotal,
     estado: venta.estado, cpeEstado: venta.cpeEstado, vendedor: usuario.nombre, cliente: cliente.nombre,

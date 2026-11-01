@@ -1,8 +1,10 @@
 import { and, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
+import { conteoEfectivo, monto, montoOCero, texto } from "../validacion";
 import { schema, type Db } from "@/db";
 import type { Sesion } from "../auth";
+import { tieneRol } from "../permisos";
 import { ErrorNegocio, MEDIOS, r2, totalConteo, type Medio } from "../util";
 import { filas } from "../sqlrows";
 import { parametros } from "./parametros";
@@ -58,7 +60,7 @@ export async function estadoCaja(db: Db, user: Sesion) {
 export const esquemaApertura = z.object({
   cajaId: z.number().int(),
   turno: z.enum(["MAÑANA", "TARDE", "NOCHE", "COMPLETO"]),
-  conteo: z.record(z.string(), z.number().int().min(0)),
+  conteo: conteoEfectivo,
   observacion: z.string().optional(),
 });
 
@@ -86,9 +88,9 @@ export async function abrirCaja(db: Db, user: Sesion, input: z.infer<typeof esqu
 
 export const esquemaMovimiento = z.object({
   tipo: z.enum(["INGRESO", "EGRESO"]),
-  concepto: z.string().min(3),
+  concepto: texto(3),
   medio: z.enum(MEDIOS).default("EFECTIVO"),
-  monto: z.number().positive(),
+  monto,
   comprobante: z.string().optional(),
 });
 
@@ -109,7 +111,7 @@ export async function eliminarMovimiento(db: Db, user: Sesion, id: number, input
   if (!m) throw new ErrorNegocio("NO_EXISTE", "El movimiento ya no existe.", 404);
   const [s] = await db.select().from(sesionCaja).where(eq(sesionCaja.id, m.sesionId));
   if (!s || s.estado !== "ABIERTA") throw new ErrorNegocio("CAJA_CERRADA", "Solo se pueden eliminar movimientos mientras la caja está abierta.");
-  if (s.usuarioId !== user.id && user.rol !== "ADMIN") throw new ErrorNegocio("SIN_PERMISO", "Solo puedes eliminar movimientos de tu propia caja.", 403);
+  if (s.usuarioId !== user.id && !user.roles.includes("ADMIN")) throw new ErrorNegocio("SIN_PERMISO", "Solo puedes eliminar movimientos de tu propia caja.", 403);
   await db.transaction(async (tx) => {
     await tx.delete(movimientoCaja).where(eq(movimientoCaja.id, id));
     await tx.insert(auditoria).values({
@@ -166,9 +168,9 @@ export async function calcularEsperado(db: Db, sesionId: number): Promise<Record
 }
 
 export const esquemaCierre = z.object({
-  conteo: z.record(z.string(), z.number().int().min(0)),
-  virtuales: z.object({ YAPE: z.number().min(0), PLIN: z.number().min(0), TARJETA: z.number().min(0), TRANSFERENCIA: z.number().min(0) }),
-  fondoSiguiente: z.number().min(0),
+  conteo: conteoEfectivo,
+  virtuales: z.object({ YAPE: montoOCero, PLIN: montoOCero, TARJETA: montoOCero, TRANSFERENCIA: montoOCero }),
+  fondoSiguiente: montoOCero,
   observacion: z.string().optional(),
 });
 
@@ -183,7 +185,7 @@ export async function cerrarCaja(db: Db, user: Sesion, input: z.infer<typeof esq
   const esperado = await calcularEsperado(db, s.id);
   const diferencia = r2(MEDIOS.reduce((acc, m) => acc + (contado[m] - esperado[m]), 0));
   const { umbral_diferencia_caja } = await parametros(db);
-  const requiereValidacion = Math.abs(diferencia) > umbral_diferencia_caja && user.rol !== "ADMIN";
+  const requiereValidacion = Math.abs(diferencia) > umbral_diferencia_caja && !user.roles.includes("ADMIN");
   const estado = requiereValidacion ? "EN_CIERRE" : "CERRADA";
   await db.update(sesionCaja).set({
     conteoCierre: input.conteo, contado, esperado, diferencia, fondoSiguiente: r2(input.fondoSiguiente), retiro: r2(efectivo - input.fondoSiguiente),
@@ -193,17 +195,17 @@ export async function cerrarCaja(db: Db, user: Sesion, input: z.infer<typeof esq
   return { sesionId: s.id, estado, requiereValidacion, diferencia };
 }
 
-export const esquemaValidacion = z.object({ sesionId: z.number().int(), login: z.string().optional(), password: z.string().optional(), observacion: z.string().min(5) });
+export const esquemaValidacion = z.object({ sesionId: z.number().int(), login: z.string().optional(), password: z.string().optional(), observacion: texto(5) });
 
 /** Un administrador distinto al cajero valida el cierre cuando la diferencia supera el umbral. */
 export async function validarCierre(db: Db, user: Sesion, input: z.infer<typeof esquemaValidacion>) {
   const [s] = await db.select().from(sesionCaja).where(eq(sesionCaja.id, input.sesionId));
   if (!s || s.estado !== "EN_CIERRE") throw new ErrorNegocio("NO_PENDIENTE", "Esta sesión no espera validación.");
-  let validador = user.rol === "ADMIN" && user.id !== s.usuarioId ? user.id : null;
+  let validador = user.roles.includes("ADMIN") && user.id !== s.usuarioId ? user.id : null;
   if (!validador) {
     if (!input.login || !input.password) throw new ErrorNegocio("CREDENCIALES", "Ingresa el usuario y la clave del administrador.");
     const [a] = await db.select().from(usuario).where(and(eq(usuario.login, input.login), eq(usuario.activo, true)));
-    if (!a || a.rol !== "ADMIN" || !(await bcrypt.compare(input.password, a.passwordHash))) throw new ErrorNegocio("CREDENCIALES", "Usuario o clave de administrador incorrectos.", 401);
+    if (!a || !a.roles.includes("ADMIN") || !(await bcrypt.compare(input.password, a.passwordHash))) throw new ErrorNegocio("CREDENCIALES", "Usuario o clave de administrador incorrectos.", 401);
     if (a.id === s.usuarioId) throw new ErrorNegocio("SEGREGACION", "El cierre lo debe validar un usuario distinto al cajero.");
     validador = a.id;
   }
@@ -215,7 +217,7 @@ export async function validarCierre(db: Db, user: Sesion, input: z.infer<typeof 
 export async function reporteCierre(db: Db, user: Sesion, sesionId: number) {
   const [s] = await db.select().from(sesionCaja).where(eq(sesionCaja.id, sesionId));
   if (!s) throw new ErrorNegocio("NO_EXISTE", "La sesión de caja no existe.", 404);
-  if (!["ADMIN", "CONTADOR"].includes(user.rol) && s.usuarioId !== user.id) throw new ErrorNegocio("SIN_PERMISO", "Solo puedes ver los reportes de tus propias sesiones.", 403);
+  if (!tieneRol(user.roles, "ADMIN", "CONTADOR") && s.usuarioId !== user.id) throw new ErrorNegocio("SIN_PERMISO", "Solo puedes ver los reportes de tus propias sesiones.", 403);
   if (s.estado === "ABIERTA") throw new ErrorNegocio("ABIERTA", "El reporte se genera al cerrar la caja.");
   const [cj] = await db.select().from(caja).where(eq(caja.id, s.cajaId));
   const [cajero] = await db.select({ nombre: usuario.nombre }).from(usuario).where(eq(usuario.id, s.usuarioId));
@@ -249,7 +251,7 @@ export async function reporteCierre(db: Db, user: Sesion, sesionId: number) {
 }
 
 export async function listarSesiones(db: Db, user: Sesion, limite = 60) {
-  const cond = ["ADMIN", "CONTADOR"].includes(user.rol) ? undefined : eq(sesionCaja.usuarioId, user.id);
+  const cond = tieneRol(user.roles, "ADMIN", "CONTADOR") ? undefined : eq(sesionCaja.usuarioId, user.id);
   const rows = await db.select({
     id: sesionCaja.id, caja: caja.nombre, cajero: usuario.nombre, turno: sesionCaja.turno, abiertaEn: sesionCaja.abiertaEn,
     cerradaEn: sesionCaja.cerradaEn, estado: sesionCaja.estado, diferencia: sesionCaja.diferencia,

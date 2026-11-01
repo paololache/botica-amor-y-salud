@@ -7,6 +7,7 @@ import { api, useDatos, soles, numero, fechaCorta, hoyLima, sumarDias, vence } f
 import { descargarCsv } from "@/lib/csv";
 import { Boton, Campo, Cargando, Encabezado, Entrada, Insignia, Interruptor, Sello, Selector, Tarjeta, Vacio, useAviso } from "@/components/ui";
 import { useUsuario } from "@/components/shell";
+import { tieneRol } from "@/lib/permisos";
 
 type Cat = { id: string; nombre: string; tipo: "ventas" | "especial"; config?: { agrupar: string; metricas: string[]; orden?: string; limite?: number; filtros?: Record<string, string> } };
 type Met = { codigo: string; nombre: string; unidad: string; tipo: string; sensible: boolean; formula?: string; id?: number; enPanel?: boolean };
@@ -40,6 +41,7 @@ function Reportes() {
     const g = info.datos.guardados.find((x) => `g${x.id}` === sel);
     if (c?.config) setCfg({ ...c.config, metricas: c.config.metricas.filter((m) => todas.some((t) => t.codigo === m)) });
     else if (g) setCfg(g.config);
+    else if (!c && info.datos.catalogo.length) setSel(info.datos.catalogo[0].id); // ?r= con un reporte que no existe
   }, [sel, info.datos, todas]);
 
   useEffect(() => {
@@ -74,9 +76,9 @@ function Reportes() {
       <Encabezado titulo="Reportes" bajada="Los más usados ya están listos; cambia el periodo, la agrupación y las métricas, o crea métricas propias.">
         <Boton variante="borde" onClick={exportar} disabled={!res && !esp}><Download size={16} /> Excel</Boton>
         <Boton variante="borde" onClick={() => window.print()}><Printer size={16} /> PDF</Boton>
-        {u.rol === "ADMIN" || u.rol === "CONTADOR" ? <Link href="/caja/eliminaciones"><Boton variante="borde"><ShieldAlert size={16} /> Eliminaciones de caja</Boton></Link> : null}
+        {tieneRol(u.roles, "ADMIN", "CONTADOR") ? <Link href="/caja/eliminaciones"><Boton variante="borde"><ShieldAlert size={16} /> Eliminaciones de caja</Boton></Link> : null}
       </Encabezado>
-      <div className={`grid gap-6 items-start ${u.rol === "ADMIN" ? "2xl:grid-cols-[240px_minmax(0,1fr)_320px] xl:grid-cols-[240px_minmax(0,1fr)]" : "xl:grid-cols-[240px_minmax(0,1fr)]"}`}>
+      <div className={`grid gap-6 items-start ${u.roles.includes("ADMIN") ? "2xl:grid-cols-[240px_minmax(0,1fr)_320px] xl:grid-cols-[240px_minmax(0,1fr)]" : "xl:grid-cols-[240px_minmax(0,1fr)]"}`}>
         <nav className="no-imprimir space-y-5" aria-label="Catálogo de reportes">
           <div>
             <p className="text-[11.5px] font-semibold text-ink-3 uppercase tracking-wide mb-2 px-2">Precargados</p>
@@ -134,7 +136,7 @@ function Reportes() {
           </Tarjeta>
         </div>
 
-        {u.rol === "ADMIN" ? <NuevaMetrica base={info.datos.metricas.base} derivadas={info.datos.metricas.derivadas} alGuardar={info.recargar} /> : null}
+        {u.roles.includes("ADMIN") ? <NuevaMetrica base={info.datos.metricas.base} derivadas={info.datos.metricas.derivadas} alGuardar={info.recargar} /> : null}
       </div>
     </div>
   );

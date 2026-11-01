@@ -3,7 +3,7 @@ import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { CircleCheck, Search } from "lucide-react";
 import { api, useDatos, fechaCorta, hoyLima, sumarDias, vence } from "@/lib/cliente";
-import { Boton, Campo, Cargando, Encabezado, Entrada, Insignia, Modal, Pestanas, Selector, Tarjeta, Vacio, useAviso } from "@/components/ui";
+import { Boton, Campo, Cargando, Encabezado, Entrada, EntradaNumero, Insignia, Modal, Pestanas, Selector, Tarjeta, Vacio, useAviso } from "@/components/ui";
 
 type Camp = { id: number; nombre: string; productoId: number; producto: string; codigo: string; lote: string | null; porcentaje: number; inicio: string; fin: string; estado: string; diasRestantes: number | null };
 type Verif = { producto: { id: number; codigo: string; nombre: string }; enKardex: boolean; ultimoMovimiento: string | null; stock: number; lotes: { id: number; numero: string; vencimiento: string; cantidad: number }[] };
@@ -78,7 +78,7 @@ function Campanas() {
             </Campo>
             <Campo etiqueta="Nombre de la campaña"><Entrada value={f.nombre} onChange={(e) => setF({ ...f, nombre: e.target.value })} maxLength={100} /></Campo>
             <Campo etiqueta="% de comisión" ayuda="Ingreso manual, sin valor por defecto">
-              <div className="relative"><Entrada inputMode="decimal" value={f.porcentaje} onChange={(e) => setF({ ...f, porcentaje: e.target.value.replace(",", ".") })} placeholder="5.00" className="pr-8" /><span className="absolute right-3 top-1/2 -translate-y-1/2 text-ink-3">%</span></div>
+              <div className="relative"><EntradaNumero inputMode="decimal" value={f.porcentaje} onChange={(e) => setF({ ...f, porcentaje: e.target.value.replace(",", ".") })} placeholder="5.00" className="pr-8" /><span className="absolute right-3 top-1/2 -translate-y-1/2 text-ink-3">%</span></div>
             </Campo>
             <div className="grid grid-cols-2 gap-3">
               <Campo etiqueta="Inicio estimado"><Entrada type="date" min={hoyLima()} value={f.inicio} onChange={(e) => setF({ ...f, inicio: e.target.value })} /></Campo>

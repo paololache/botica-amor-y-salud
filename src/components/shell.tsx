@@ -3,30 +3,20 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import {
-  LayoutGrid, ScanBarcode, Wallet, ReceiptText, Pill, Truck, ArrowLeftRight, BookOpenText, BadgePercent, Link2, HandCoins, ChartColumn, LogOut, Menu, PanelLeftClose, PanelLeftOpen, X,
+  UsersRound, LayoutGrid, ScanBarcode, Wallet, ReceiptText, Pill, FlaskConical, Truck, ArrowLeftRight, BookOpenText, BadgePercent, Link2, HandCoins, ChartColumn, LogOut, Menu, PanelLeftClose, PanelLeftOpen, X,
 } from "lucide-react";
 import type { Rol } from "@/lib/permisos";
-import { ROL_NOMBRE } from "@/lib/permisos";
+import { MODULOS, ROL_NOMBRE, moduloDeRuta, tieneRol } from "@/lib/permisos";
 import { api } from "@/lib/cliente";
 
-export type UsuarioUI = { id: number; nombre: string; login: string; rol: Rol; verCostos: boolean };
+export type UsuarioUI = { id: number; nombre: string; login: string; roles: Rol[]; verCostos: boolean };
 const Ctx = createContext<UsuarioUI | null>(null);
 export function useUsuario() { return useContext(Ctx)!; }
 
-const NAV: { href: string; texto: string; icono: typeof LayoutGrid; roles: Rol[] }[] = [
-  { href: "/", texto: "Panel", icono: LayoutGrid, roles: ["ADMIN", "QF", "CAJERO", "VENDEDOR", "INVENTARIADOR", "CONTADOR"] },
-  { href: "/vender", texto: "Vender", icono: ScanBarcode, roles: ["ADMIN", "QF", "CAJERO", "VENDEDOR"] },
-  { href: "/caja", texto: "Caja", icono: Wallet, roles: ["ADMIN", "QF", "CAJERO", "VENDEDOR"] },
-  { href: "/ventas", texto: "Ventas", icono: ReceiptText, roles: ["ADMIN", "QF", "CAJERO", "VENDEDOR", "CONTADOR"] },
-  { href: "/productos", texto: "Productos", icono: Pill, roles: ["ADMIN", "QF", "CAJERO", "VENDEDOR", "INVENTARIADOR", "CONTADOR"] },
-  { href: "/compras", texto: "Compras", icono: Truck, roles: ["ADMIN", "INVENTARIADOR"] },
-  { href: "/movimientos", texto: "Salidas y entradas", icono: ArrowLeftRight, roles: ["ADMIN", "QF", "INVENTARIADOR"] },
-  { href: "/kardex", texto: "Kardex", icono: BookOpenText, roles: ["ADMIN", "QF", "INVENTARIADOR", "CONTADOR"] },
-  { href: "/campanas", texto: "Campañas", icono: BadgePercent, roles: ["ADMIN"] },
-  { href: "/complementos", texto: "Complementos", icono: Link2, roles: ["ADMIN", "QF"] },
-  { href: "/comisiones", texto: "Comisiones", icono: HandCoins, roles: ["ADMIN", "QF", "CAJERO", "VENDEDOR", "CONTADOR"] },
-  { href: "/reportes", texto: "Reportes", icono: ChartColumn, roles: ["ADMIN", "QF", "INVENTARIADOR", "CONTADOR"] },
-];
+const ICONOS: Record<string, typeof LayoutGrid> = {
+  "/": LayoutGrid, "/vender": ScanBarcode, "/caja": Wallet, "/ventas": ReceiptText, "/productos": Pill, "/compras": Truck, "/movimientos": ArrowLeftRight,
+  "/laboratorios": FlaskConical, "/kardex": BookOpenText, "/campanas": BadgePercent, "/complementos": Link2, "/comisiones": HandCoins, "/reportes": ChartColumn, "/usuarios": UsersRound,
+};
 
 function Marca({ compacta = false }: { compacta?: boolean }) {
   return (
@@ -64,7 +54,9 @@ export function Shell({ usuario, children }: { usuario: UsuarioUI; children: Rea
     setReducido(nuevo);
     try { localStorage.setItem(CLAVE_MENU, JSON.stringify(nuevo)); } catch { /* se aplica solo en esta visita */ }
   };
-  const items = NAV.filter((n) => n.roles.includes(usuario.rol));
+  const items = MODULOS.filter((m) => !m.oculto && tieneRol(usuario.roles, ...m.roles)).map((m) => ({ ...m, icono: ICONOS[m.href] }));
+  const modulo = moduloDeRuta(ruta);
+  const conAcceso = !modulo || tieneRol(usuario.roles, ...modulo.roles);
   const salir = async () => { await api("/api/auth/logout", { metodo: "POST" }); router.push("/login"); router.refresh(); };
   const activo = (href: string) => (href === "/" ? ruta === "/" : ruta.startsWith(href));
   const nav = (corto: boolean) => (
@@ -85,7 +77,7 @@ export function Shell({ usuario, children }: { usuario: UsuarioUI; children: Rea
       ) : (
         <div className="rounded-2xl bg-white/6 p-3.5">
           <div className="text-white font-semibold text-sm truncate">{usuario.nombre}</div>
-          <div className="text-rosado/80 text-[12px] mt-0.5 truncate">{ROL_NOMBRE[usuario.rol]}</div>
+          <div className="text-rosado/80 text-[12px] mt-0.5 truncate">{usuario.roles.map((r) => ROL_NOMBRE[r]).join(" · ")}</div>
           <button onClick={salir} className="mt-3 inline-flex items-center gap-2 text-[13px] text-white/75 hover:text-white">
             <LogOut size={15} /> Cerrar sesión
           </button>
@@ -120,7 +112,13 @@ export function Shell({ usuario, children }: { usuario: UsuarioUI; children: Rea
             </aside>
           </div>
         ) : null}
-        <main className="px-4 md:px-8 py-6 md:py-8 max-w-[1440px] mx-auto">{children}</main>
+        <main className="px-4 md:px-8 py-6 md:py-8 max-w-[1440px] mx-auto">{conAcceso ? children : (
+          <div className="tarjeta p-10 text-center">
+            <h1 className="font-display font-semibold text-[22px]">No tienes acceso a {modulo?.texto}</h1>
+            <p className="text-ink-2 mt-2 text-sm">Tus perfiles no incluyen este módulo. Pide al propietario que te lo asigne.</p>
+            <Link href="/" className="inline-block mt-4 font-semibold text-vino-2">Volver al panel</Link>
+          </div>
+        )}</main>
       </div>
     </Ctx.Provider>
   );

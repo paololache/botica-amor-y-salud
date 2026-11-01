@@ -1,6 +1,7 @@
 "use client";
 import { Minus, Plus } from "lucide-react";
 import { soles } from "@/lib/cliente";
+import { EntradaNumero } from "@/components/ui";
 
 export const DENOMS = [
   { v: "200", t: "S/ 200", b: true }, { v: "100", t: "S/ 100", b: true }, { v: "50", t: "S/ 50", b: true }, { v: "20", t: "S/ 20", b: true }, { v: "10", t: "S/ 10", b: true },
@@ -23,7 +24,7 @@ export function ContadorEfectivo({ conteo, alCambiar }: { conteo: Record<string,
             </div>
             <div className="flex items-center justify-between mt-1.5">
               <button type="button" onClick={() => set(d.v, (conteo[d.v] || 0) - 1)} className="size-8 grid place-items-center rounded-lg hover:bg-foil" aria-label={`Quitar ${d.t}`}><Minus size={15} /></button>
-              <input value={conteo[d.v] || ""} placeholder="0" inputMode="numeric" aria-label={`Cantidad de ${d.t}`} onChange={(e) => set(d.v, parseInt(e.target.value) || 0)}
+              <EntradaNumero crudo value={conteo[d.v] || ""} placeholder="0" inputMode="numeric" aria-label={`Cantidad de ${d.t}`} onChange={(e) => set(d.v, parseInt(e.target.value) || 0)}
                 className="w-14 h-8 text-center rounded-lg border border-foil-3 font-semibold bg-papel" />
               <button type="button" onClick={() => set(d.v, (conteo[d.v] || 0) + 1)} className="size-8 grid place-items-center rounded-lg hover:bg-foil" aria-label={`Agregar ${d.t}`}><Plus size={15} /></button>
             </div>

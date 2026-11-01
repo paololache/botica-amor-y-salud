@@ -1,18 +1,18 @@
 "use client";
 import { useState } from "react";
 import { Trash } from "lucide-react";
-import { api, useDatos, soles, fechaCorta, hoyLima } from "@/lib/cliente";
-import { Boton, Campo, Cargando, Encabezado, Entrada, Insignia, Pestanas, Selector, Tarjeta, Vacio, useAviso } from "@/components/ui";
+import { api, useDatos, soles, fechaCorta, fechaHora, hoyLima } from "@/lib/cliente";
+import { Boton, Campo, Cargando, Encabezado, Entrada, EntradaNumero, Insignia, Modal, Pestanas, Selector, Tarjeta, Vacio, useAviso } from "@/components/ui";
 import { BuscadorProducto, type ProdBusqueda } from "@/components/buscador-producto";
 import { useUsuario } from "@/components/shell";
 
-type Compra = { id: number; proveedor: string; ruc: string; tipo: string; serie: string; numero: string; fechaEmision: string; estado: string; registradoPor: string; totalCosto?: number | null };
+type Compra = { id: number; proveedor: string; ruc: string; tipo: string; serie: string; numero: string; fechaEmision: string; estado: string; registradoPor: string; totalCosto?: number | null; correcciones: number; motivoAnulacion: string | null };
 type Detalle = { compra: { id: number; serie: string; numero: string; estado: string }; items: { id: number; producto: string; presentacion: string; factor: number; cantidad: number; unidades: number; numeroLote: string; vencimiento: string; costoPresentacion?: number | null; costoAnterior?: number; pvp: number }[] };
 type Linea = { prod: ProdBusqueda; presentacionId: number; cantidad: string; numeroLote: string; vencimiento: string };
 
 export default function Compras() {
   const u = useUsuario();
-  const [tab, setTab] = useState<"recibir" | "pendientes" | "historial">(u.rol === "ADMIN" ? "pendientes" : "recibir");
+  const [tab, setTab] = useState<"recibir" | "pendientes" | "historial">(u.roles.includes("ADMIN") ? "pendientes" : "recibir");
   const pendientes = useDatos<Compra[]>("/api/compras?estado=PENDIENTE_COSTO");
   return (
     <div>
@@ -20,7 +20,7 @@ export default function Compras() {
       <div className="mb-5">
         <Pestanas valor={tab} alCambiar={setTab} opciones={[
           { valor: "recibir", texto: "Recibir mercadería" },
-          ...(u.rol === "ADMIN" ? [{ valor: "pendientes" as const, texto: "Pendientes de costo", extra: pendientes.datos?.length ? <Insignia tono="amor">{pendientes.datos.length}</Insignia> : undefined }] : []),
+          ...(u.roles.includes("ADMIN") ? [{ valor: "pendientes" as const, texto: "Pendientes de costo", extra: pendientes.datos?.length ? <Insignia tono="amor">{pendientes.datos.length}</Insignia> : undefined }] : []),
           { valor: "historial", texto: "Historial" },
         ]} />
       </div>
@@ -51,7 +51,7 @@ function Recibir({ alTerminar }: { alTerminar: () => void }) {
     <div className="grid xl:grid-cols-[360px_minmax(0,1fr)] gap-6 items-start">
       <Tarjeta titulo="Comprobante del proveedor">
         <div className="px-5 pb-5 space-y-3">
-          <Campo etiqueta="RUC"><Entrada inputMode="numeric" value={cab.ruc} onChange={(e) => setCab({ ...cab, ruc: e.target.value.replace(/\D/g, "").slice(0, 11) })} placeholder="20100000011" /></Campo>
+          <Campo etiqueta="RUC"><EntradaNumero inputMode="numeric" value={cab.ruc} onChange={(e) => setCab({ ...cab, ruc: e.target.value.replace(/\D/g, "").slice(0, 11) })} placeholder="20100000011" /></Campo>
           <Campo etiqueta="Razón social"><Entrada value={cab.razonSocial} onChange={(e) => setCab({ ...cab, razonSocial: e.target.value })} /></Campo>
           <Campo etiqueta="Tipo"><Selector value={cab.tipoComprobante} onChange={(e) => setCab({ ...cab, tipoComprobante: e.target.value })}><option value="FACTURA">Factura</option><option value="BOLETA">Boleta</option><option value="NOTA_COMPRA">Nota de compra</option></Selector></Campo>
           <div className="grid grid-cols-2 gap-3">
@@ -72,7 +72,7 @@ function Recibir({ alTerminar }: { alTerminar: () => void }) {
                 <tr key={i}>
                   <td className="font-semibold">{l.prod.nombre}</td>
                   <td><select className="h-9 rounded-lg border border-foil-3 px-2 text-[13.5px] bg-papel" value={l.presentacionId} onChange={(e) => set({ presentacionId: Number(e.target.value) })}>{l.prod.presentaciones.map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}</select></td>
-                  <td className="num"><input className="w-20 h-9 rounded-lg border border-foil-3 text-right px-2" inputMode="numeric" value={l.cantidad} onChange={(e) => set({ cantidad: e.target.value.replace(/\D/g, "") })} aria-label="Cantidad" /></td>
+                  <td className="num"><EntradaNumero crudo className="w-20 h-9 rounded-lg border border-foil-3 text-right px-2" inputMode="numeric" value={l.cantidad} onChange={(e) => set({ cantidad: e.target.value.replace(/\D/g, "") })} aria-label="Cantidad" /></td>
                   <td><input className="w-28 h-9 rounded-lg border border-foil-3 px-2 uppercase" value={l.numeroLote} onChange={(e) => set({ numeroLote: e.target.value })} aria-label="Lote" /></td>
                   <td><input type="date" className="h-9 rounded-lg border border-foil-3 px-2" value={l.vencimiento} onChange={(e) => set({ vencimiento: e.target.value })} aria-label="Vencimiento" /></td>
                   <td><button className="size-8 grid place-items-center rounded-lg text-ink-3 hover:text-rojo" aria-label="Quitar" onClick={() => setLineas((ls) => ls.filter((_, k) => k !== i))}><Trash size={15} /></button></td>
@@ -130,12 +130,12 @@ function Pendientes({ lista, recargar }: { lista: Compra[] | null; recargar: () 
             <thead><tr><th>Producto</th><th>Lote</th><th className="num">Cantidad</th><th className="num">Costo anterior</th><th className="num">Costo por presentación</th></tr></thead>
             <tbody>{det.datos.items.map((i) => (
               <tr key={i.id}><td><b>{i.producto}</b><span className="block text-[12px] text-ink-3">{i.presentacion}</span></td><td><span className="sello">{i.numeroLote}</span></td><td className="num">{i.cantidad}</td><td className="num text-ink-2">{soles(i.costoAnterior)}</td>
-                <td className="num"><input className="w-28 h-9 rounded-lg border border-foil-3 text-right px-2" inputMode="decimal" placeholder="0.00" value={costos[i.id] ?? ""} onChange={(e) => setCostos({ ...costos, [i.id]: e.target.value.replace(",", ".") })} aria-label={`Costo de ${i.producto}`} /></td></tr>
+                <td className="num"><EntradaNumero crudo className="w-28 h-9 rounded-lg border border-foil-3 text-right px-2" inputMode="decimal" placeholder="0.00" value={costos[i.id] ?? ""} onChange={(e) => setCostos({ ...costos, [i.id]: e.target.value.replace(",", ".") })} aria-label={`Costo de ${i.producto}`} /></td></tr>
             ))}</tbody>
           </table></div>
           <div className="px-5 py-4 border-t border-foil flex flex-wrap items-center justify-between gap-3">
             {error ? <p className="text-sm text-rojo max-w-lg">{error}</p> : <span className="text-[13px] text-ink-2">Total: {soles(det.datos.items.reduce((s, i) => s + (Number(costos[i.id]) || 0) * i.cantidad, 0))}</span>}
-            <Boton variante="amor" cargando={ocupado} onClick={costear}>{confirmar ? "Confirmar variación e ingresar" : "Ingresar al kardex"}</Boton>
+            <Boton variante="amor" cargando={ocupado} disabled={det.datos.items.some((i) => (costos[i.id] ?? "") === "")} title="Escribe el costo de cada producto; si es una bonificación, escribe 0" onClick={costear}>{confirmar ? "Confirmar variación e ingresar" : "Ingresar al kardex"}</Boton>
           </div>
         </Tarjeta>
       ) : <Tarjeta><Vacio titulo="Elige una recepción">Registra el costo de cada producto según la factura del proveedor.</Vacio></Tarjeta>}
@@ -144,16 +144,113 @@ function Pendientes({ lista, recargar }: { lista: Compra[] | null; recargar: () 
 }
 
 function HistorialCompras() {
-  const { datos } = useDatos<Compra[]>("/api/compras");
+  const { datos, recargar } = useDatos<Compra[]>("/api/compras");
   const u = useUsuario();
+  const [corregir, setCorregir] = useState<Compra | null>(null);
+  const [anular, setAnular] = useState<Compra | null>(null);
   return (
     <Tarjeta>
       {!datos ? <div className="p-5"><Cargando /></div> : (
         <div className="overflow-x-auto"><table className="tabla">
-          <thead><tr><th>Comprobante</th><th>Proveedor</th><th>Emisión</th><th>Estado</th>{u.verCostos ? <th className="num">Total</th> : null}</tr></thead>
-          <tbody>{datos.map((c) => <tr key={c.id}><td><span className="sello">{c.serie}-{c.numero}</span></td><td>{c.proveedor}</td><td>{fechaCorta(c.fechaEmision)}</td><td>{c.estado === "CONFIRMADA" ? <Insignia tono="ok">En kardex</Insignia> : <Insignia tono="ambar">Pendiente de costo</Insignia>}</td>{u.verCostos ? <td className="num">{soles(c.totalCosto)}</td> : null}</tr>)}</tbody>
+          <thead><tr><th>Comprobante</th><th>Proveedor</th><th>Emisión</th><th>Estado</th>{u.verCostos ? <th className="num">Total</th> : null}{u.roles.includes("ADMIN") ? <th /> : null}</tr></thead>
+          <tbody>{datos.map((c) => <tr key={c.id}><td><span className="sello">{c.serie}-{c.numero}</span></td><td>{c.proveedor}</td><td>{fechaCorta(c.fechaEmision)}</td><td>{c.estado === "ANULADA" ? <Insignia tono="rojo">Anulada</Insignia> : c.estado === "CONFIRMADA" ? <Insignia tono="ok">En kardex</Insignia> : <Insignia tono="ambar">Pendiente de costo</Insignia>}{c.correcciones ? <Insignia tono="azul" className="ml-1.5">Costo corregido</Insignia> : null}{c.motivoAnulacion ? <span className="block text-[12px] text-ink-3 mt-1">{c.motivoAnulacion}</span> : null}</td>{u.verCostos ? <td className={`num ${c.estado === "ANULADA" ? "line-through text-ink-3" : ""}`}>{soles(c.totalCosto)}</td> : null}
+            {u.roles.includes("ADMIN") ? <td className="text-right whitespace-nowrap">{c.estado === "CONFIRMADA" ? <Boton tam="sm" variante="borde" onClick={() => setCorregir(c)}>{c.correcciones ? "Ver o corregir costo" : "Corregir costo"}</Boton> : null}{c.estado !== "ANULADA" ? <Boton tam="sm" variante="fantasma" className="ml-1.5" onClick={() => setAnular(c)}>Anular</Boton> : null}</td> : null}</tr>)}</tbody>
         </table></div>
       )}
+      {corregir ? <CorregirCosto key={corregir.id} compra={corregir} alCerrar={() => setCorregir(null)} alCorregir={recargar} /> : null}
+      {anular ? <AnularCompra key={anular.id} compra={anular} alCerrar={() => setAnular(null)} alAnular={recargar} /> : null}
     </Tarjeta>
+  );
+}
+
+function AnularCompra({ compra, alCerrar, alAnular }: { compra: Compra; alCerrar: () => void; alAnular: () => void }) {
+  const avisar = useAviso();
+  const [motivo, setMotivo] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [ocupado, setOcupado] = useState(false);
+  const enKardex = compra.estado === "CONFIRMADA";
+  const confirmar = async () => {
+    setOcupado(true); setError(null);
+    try {
+      await api(`/api/compras/${compra.id}/anular`, { cuerpo: { motivo } });
+      avisar("ok", `Compra ${compra.serie}-${compra.numero} anulada.`);
+      alAnular(); alCerrar();
+    } catch (e) { setError((e as Error).message); } finally { setOcupado(false); }
+  };
+  return (
+    <Modal abierto alCerrar={alCerrar} titulo={`Anular compra ${compra.serie}-${compra.numero}`}>
+      <p className="text-sm text-ink-2">{enKardex ? "Se retiran sus unidades del stock y se recalcula el costo promedio. No se puede anular si ya salió parte de la mercadería." : "Esta recepción aún no movió stock; solo dejará de estar pendiente de costo."} La compra seguirá en el historial marcada como anulada, y esta acción no se puede deshacer.</p>
+      <Campo etiqueta="Motivo de la anulación" ayuda="Queda en la auditoría con tu usuario y la hora" className="mt-4"><Entrada autoFocus value={motivo} onChange={(e) => setMotivo(e.target.value)} placeholder="Ej.: compra registrada dos veces" /></Campo>
+      {error ? <p className="text-sm text-rojo mt-3">{error}</p> : null}
+      <div className="flex justify-end gap-2 mt-5">
+        <Boton variante="fantasma" onClick={alCerrar}>Cancelar</Boton>
+        <Boton variante="peligro" cargando={ocupado} disabled={motivo.trim().length < 5} onClick={confirmar}>Anular compra</Boton>
+      </div>
+    </Modal>
+  );
+}
+
+type Cambio = { producto: string; presentacion: string; lote: string; antes: number; despues: number };
+type DatosCorreccion = { salidas: Record<number, number>; historial: { id: number; fecha: string; usuario: string | null; detalle: { motivo: string; totalAntes: number; totalDespues: number; cambios: Cambio[] } }[] };
+
+function CorregirCosto({ compra, alCerrar, alCorregir }: { compra: Compra; alCerrar: () => void; alCorregir: () => void }) {
+  const avisar = useAviso();
+  const det = useDatos<Detalle>(`/api/compras/${compra.id}`);
+  const extra = useDatos<DatosCorreccion>(`/api/compras/${compra.id}/correccion`);
+  const [costos, setCostos] = useState<Record<number, string>>({});
+  const [motivo, setMotivo] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [ocupado, setOcupado] = useState(false);
+  const [pvp, setPvp] = useState<{ producto: string; pvpSugerido: number }[] | null>(null);
+  const items = det.datos?.items ?? [];
+  const valor = (i: Detalle["items"][number]) => costos[i.id] ?? String(i.costoPresentacion ?? 0);
+  const cambio = items.some((i) => valor(i) !== "" && Number(valor(i)) !== (i.costoPresentacion ?? 0));
+  const total = items.reduce((s, i) => s + (Number(valor(i)) || 0) * i.cantidad, 0);
+  const guardar = async () => {
+    setOcupado(true); setError(null);
+    try {
+      const r = await api<{ total: number; pvpSugerido: { producto: string; pvpSugerido: number }[] }>(`/api/compras/${compra.id}/correccion`, { cuerpo: { motivo, costos: items.map((i) => ({ detalleId: i.id, costoPresentacion: Number(valor(i)) || 0 })) } });
+      avisar("ok", `Costo corregido. La compra ahora suma ${soles(r.total)}.`);
+      setPvp(r.pvpSugerido); alCorregir();
+    } catch (e) { setError((e as Error).message); } finally { setOcupado(false); }
+  };
+  return (
+    <Modal abierto alCerrar={alCerrar} titulo={`Corregir costo ${compra.serie}-${compra.numero}`} ancho="max-w-3xl">
+      {pvp ? (
+        <div>
+          <p className="text-sm text-ink-2 mb-3">La corrección quedó en el kardex y en la auditoría. El precio de venta no cambia solo; este es el sugerido con el nuevo costo promedio:</p>
+          <table className="tabla"><tbody>{pvp.map((x, i) => <tr key={i}><td>{x.producto}</td><td className="num font-semibold">{soles(x.pvpSugerido)}</td></tr>)}</tbody></table>
+          <div className="flex justify-end mt-5"><Boton onClick={alCerrar}>Cerrar</Boton></div>
+        </div>
+      ) : !det.datos || !extra.datos ? <Cargando /> : (
+        <div>
+          <p className="text-sm text-ink-2 mb-3">Actualiza el total de la compra, el costo del lote y el costo promedio. Las ventas ya hechas conservan el costo con el que se registraron.</p>
+          <div className="overflow-x-auto"><table className="tabla">
+            <thead><tr><th>Producto</th><th className="num">Cantidad</th><th className="num">Costo actual</th><th className="num">Costo correcto</th></tr></thead>
+            <tbody>{items.map((i) => (
+              <tr key={i.id}>
+                <td><b>{i.producto}</b><span className="block text-[12px] text-ink-3">{i.presentacion} · lote {i.numeroLote}</span>{extra.datos!.salidas[i.id] ? <span className="block text-[12px] text-ambar">Ya salieron {extra.datos!.salidas[i.id]} und. con el costo anterior</span> : null}</td>
+                <td className="num">{i.cantidad}</td><td className="num text-ink-2">{soles(i.costoPresentacion)}</td>
+                <td className="num"><EntradaNumero crudo className="w-28 h-9 rounded-lg border border-foil-3 text-right px-2" inputMode="decimal" value={valor(i)} onChange={(e) => setCostos({ ...costos, [i.id]: e.target.value.replace(",", ".") })} aria-label={`Costo correcto de ${i.producto}`} /></td>
+              </tr>
+            ))}</tbody>
+          </table></div>
+          <Campo etiqueta="Motivo de la corrección" ayuda="Queda en la auditoría con tu usuario y la hora" className="mt-4"><Entrada value={motivo} onChange={(e) => setMotivo(e.target.value)} placeholder="Ej.: se digitó el costo de la caja en vez del blíster" /></Campo>
+          {error ? <p className="text-sm text-rojo mt-3">{error}</p> : null}
+          <div className="flex flex-wrap items-center justify-between gap-3 mt-5">
+            <span className="text-[13px] text-ink-2">Total: {soles(compra.totalCosto)} → <b>{soles(total)}</b></span>
+            <div className="flex gap-2"><Boton variante="fantasma" onClick={alCerrar}>Cancelar</Boton><Boton variante="amor" cargando={ocupado} disabled={!cambio || motivo.trim().length < 5} onClick={guardar}>Guardar corrección</Boton></div>
+          </div>
+          {extra.datos.historial.length ? (
+            <div className="mt-5 pt-4 border-t border-foil">
+              <p className="text-[13px] font-semibold mb-2">Correcciones anteriores</p>
+              <ul className="space-y-2.5 text-[13px]">{extra.datos.historial.map((h) => (
+                <li key={h.id}><span className="font-semibold">{fechaHora(h.fecha)} · {h.usuario ?? "—"}</span><span className="block text-ink-2">{h.detalle.motivo}</span>{h.detalle.cambios.map((c, k) => <span key={k} className="block text-ink-3">{c.producto}, lote {c.lote}: {soles(c.antes)} → {soles(c.despues)}</span>)}</li>
+              ))}</ul>
+            </div>
+          ) : null}
+        </div>
+      )}
+    </Modal>
   );
 }

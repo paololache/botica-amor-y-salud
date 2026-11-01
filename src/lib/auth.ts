@@ -2,7 +2,7 @@ import { SignJWT, jwtVerify } from "jose";
 import type { Rol } from "./permisos";
 
 export const COOKIE = "botica_sesion";
-export type Sesion = { id: number; nombre: string; login: string; rol: Rol };
+export type Sesion = { id: number; nombre: string; login: string; roles: Rol[] };
 
 function clave() {
   const s = process.env.AUTH_SECRET || "solo-para-desarrollo-local-cambiar-en-vercel-0000";
@@ -17,7 +17,7 @@ export async function leerSesion(token: string | undefined | null): Promise<Sesi
   if (!token) return null;
   try {
     const { payload } = await jwtVerify(token, clave());
-    return { id: Number(payload.id), nombre: String(payload.nombre), login: String(payload.login), rol: payload.rol as Rol };
+    return { id: Number(payload.id), nombre: String(payload.nombre), login: String(payload.login), roles: (payload.roles as Rol[] | undefined) ?? (payload.rol ? [payload.rol as Rol] : []) };
   } catch {
     return null;
   }

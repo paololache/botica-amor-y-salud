@@ -3,7 +3,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Search, Minus, Plus, Trash, Sparkles, Printer, ScanBarcode, FileText, Eye } from "lucide-react";
 import { api, useDatos, soles, vence } from "@/lib/cliente";
-import { Boton, Entrada, Insignia, Modal, Vacio, useAviso } from "@/components/ui";
+import { Boton, Entrada, EntradaNumero, Insignia, Modal, Vacio, useAviso } from "@/components/ui";
 import { useUsuario } from "@/components/shell";
 
 type Pres = { id: number; nombre: string; factor: number; pvp: number };
@@ -100,7 +100,7 @@ export default function Vender() {
   }), [items]);
   const total = Math.round(lineas.reduce((s, l) => s + l.subtotal, 0) * 100) / 100;
   const requiereReceta = lineas.some((l) => l.prod.condicionVenta !== "LIBRE");
-  const requiereAutorizacion = lineas.some((l) => l.descuentoPct > 5) && u.rol !== "ADMIN";
+  const requiereAutorizacion = lineas.some((l) => l.descuentoPct > 5) && !u.roles.includes("ADMIN");
   const requiereDoc = tipo === "FACTURA" || (tipo === "BOLETA" && total > 700);
   const pagado = pagos.reduce((s, p) => s + (Number(p.monto) || 0), 0);
   const vuelto = Math.max(0, Math.round((pagado - total) * 100) / 100);
@@ -253,13 +253,13 @@ export default function Vender() {
                       <td className="num">
                         <div className="inline-flex items-center gap-1">
                           <button className="size-8 grid place-items-center rounded-lg hover:bg-foil" aria-label="Menos" onClick={() => setItems((xs) => xs.map((x, k) => (k === i ? { ...x, cantidad: Math.max(1, x.cantidad - 1) } : x)))}><Minus size={15} /></button>
-                          <input value={l.cantidad} inputMode="numeric" aria-label="Cantidad" onChange={(e) => setItems((xs) => xs.map((x, k) => (k === i ? { ...x, cantidad: Math.max(1, parseInt(e.target.value) || 1) } : x)))} className="w-12 h-8 text-center rounded-lg border border-foil-3 font-semibold" />
+                          <EntradaNumero crudo value={l.cantidad} inputMode="numeric" aria-label="Cantidad" onChange={(e) => setItems((xs) => xs.map((x, k) => (k === i ? { ...x, cantidad: Math.max(1, parseInt(e.target.value) || 1) } : x)))} className="w-12 h-8 text-center rounded-lg border border-foil-3 font-semibold" />
                           <button className="size-8 grid place-items-center rounded-lg hover:bg-foil" aria-label="Más" onClick={() => setItems((xs) => xs.map((x, k) => (k === i ? { ...x, cantidad: x.cantidad + 1 } : x)))}><Plus size={15} /></button>
                         </div>
                         {l.unidades > l.prod.stockVigente ? <div className="text-[11.5px] text-rojo mt-1">Solo hay {l.prod.stockVigente} und.</div> : null}
                       </td>
                       <td className="num">{soles(l.pres.pvp)}</td>
-                      <td className="num"><input value={l.descuentoPct || ""} placeholder="0" inputMode="decimal" aria-label="Descuento" onChange={(e) => setItems((xs) => xs.map((x, k) => (k === i ? { ...x, descuentoPct: Math.min(100, Math.max(0, Number(e.target.value) || 0)) } : x)))} className="w-14 h-8 text-right px-2 rounded-lg border border-foil-3" /></td>
+                      <td className="num"><EntradaNumero crudo value={l.descuentoPct || ""} placeholder="0" inputMode="decimal" aria-label="Descuento" onChange={(e) => setItems((xs) => xs.map((x, k) => (k === i ? { ...x, descuentoPct: Math.min(100, Math.max(0, Number(e.target.value) || 0)) } : x)))} className="w-14 h-8 text-right px-2 rounded-lg border border-foil-3" /></td>
                       <td className="num font-semibold">{soles(l.subtotal)}</td>
                       <td><button onClick={() => setItems((xs) => xs.filter((_, k) => k !== i))} className="size-8 grid place-items-center rounded-lg text-ink-3 hover:text-rojo hover:bg-rojo-claro" aria-label="Quitar"><Trash size={15} /></button></td>
                     </tr>
@@ -302,7 +302,7 @@ export default function Vender() {
             </div>
             {requiereDoc || conCliente ? (
               <div className="grid grid-cols-[1fr_1.4fr] gap-2 mt-3">
-                <Entrada placeholder={tipo === "FACTURA" ? "RUC" : "DNI"} inputMode="numeric" value={cliente.numero} onChange={(e) => setCliente({ ...cliente, numero: e.target.value.replace(/\D/g, "").slice(0, 11) })} />
+                <EntradaNumero placeholder={tipo === "FACTURA" ? "RUC" : "DNI"} inputMode="numeric" value={cliente.numero} onChange={(e) => setCliente({ ...cliente, numero: e.target.value.replace(/\D/g, "").slice(0, 11) })} />
                 <Entrada placeholder={tipo === "FACTURA" ? "Razón social" : "Nombre"} value={cliente.nombre} onChange={(e) => setCliente({ ...cliente, nombre: e.target.value })} />
               </div>
             ) : (
@@ -333,7 +333,7 @@ export default function Vender() {
                 ))}
               </div>
               <div className="flex items-center gap-1.5 ml-auto">
-              <Entrada autoFocus={i === 0} inputMode="decimal" placeholder={i === 0 ? total.toFixed(2) : "0.00"} value={p.monto} onChange={(e) => setPagos((ps) => ps.map((x, k) => (k === i ? { ...x, monto: e.target.value.replace(",", ".") } : x)))} className="w-32 text-right font-semibold" aria-label="Monto" />
+              <EntradaNumero autoFocus={i === 0} inputMode="decimal" placeholder={i === 0 ? total.toFixed(2) : "0.00"} value={p.monto} onChange={(e) => setPagos((ps) => ps.map((x, k) => (k === i ? { ...x, monto: e.target.value.replace(",", ".") } : x)))} className="w-32 text-right font-semibold" aria-label="Monto" />
               {pagos.length > 1 ? (
                 <button onClick={() => setPagos((ps) => ps.filter((_, k) => k !== i))} className="size-10 grid place-items-center rounded-xl text-ink-3 hover:text-rojo hover:bg-rojo-claro" aria-label={`Quitar pago ${i + 1}`} title="Quitar este pago"><Trash size={16} /></button>
               ) : null}

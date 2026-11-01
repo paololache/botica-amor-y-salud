@@ -4,6 +4,7 @@ import { Eye, FileText, Printer, RefreshCw } from "lucide-react";
 import { api, useDatos, soles, fechaHora } from "@/lib/cliente";
 import { Boton, Cargando, Encabezado, Entrada, Insignia, Modal, Selector, Tarjeta, Vacio, useAviso } from "@/components/ui";
 import { useUsuario } from "@/components/shell";
+import { tieneRol } from "@/lib/permisos";
 
 type V = { id: number; serie: string; numero: number; fecha: string; tipo: string; total: number; costoTotal?: number; estado: string; cpeEstado: string; vendedor: string; cliente: string | null };
 
@@ -24,10 +25,10 @@ export default function Ventas() {
   const pendientes = (datos ?? []).filter((v) => v.cpeEstado === "PENDIENTE").length;
   return (
     <div>
-      <Encabezado titulo="Ventas" bajada={`${emitidas.length} comprobantes · ${soles(total)}${u.rol === "ADMIN" || u.rol === "CONTADOR" ? "" : " · solo tus ventas"}`}>
+      <Encabezado titulo="Ventas" bajada={`${emitidas.length} comprobantes · ${soles(total)}${tieneRol(u.roles, "ADMIN", "CONTADOR") ? "" : " · solo tus ventas"}`}>
         <Selector value={dias} onChange={(e) => setDias(Number(e.target.value))} className="w-40"><option value={1}>Hoy</option><option value={7}>Últimos 7 días</option><option value={30}>Últimos 30 días</option></Selector>
         <Selector value={tipo} onChange={(e) => setTipo(e.target.value)} className="w-56" aria-label="Tipo de comprobante"><option value="">Todos los comprobantes</option><option value="BOLETA">Boletas</option><option value="FACTURA">Facturas</option><option value="NOTA_VENTA">Notas de venta</option></Selector>
-        {u.rol === "ADMIN" && pendientes ? <Boton variante="borde" onClick={async () => { const r = await api<{ aceptados: number }>("/api/ventas/reenviar", { metodo: "POST" }); avisar("ok", `${r.aceptados} CPE aceptados.`); recargar(); }}><RefreshCw size={15} /> Reenviar {pendientes} CPE</Boton> : null}
+        {u.roles.includes("ADMIN") && pendientes ? <Boton variante="borde" onClick={async () => { const r = await api<{ aceptados: number }>("/api/ventas/reenviar", { metodo: "POST" }); avisar("ok", `${r.aceptados} CPE aceptados.`); recargar(); }}><RefreshCw size={15} /> Reenviar {pendientes} CPE</Boton> : null}
       </Encabezado>
       <Tarjeta>
         {!datos ? <div className="p-5"><Cargando /></div> : lista.length ? (
@@ -45,7 +46,7 @@ export default function Ventas() {
                     <a href={`/comprobante/${v.id}?formato=ticket`} target="_blank" rel="noopener" className={ICONO} title="Ver comprobante" aria-label={`Ver ${v.serie}-${v.numero}`}><Eye size={16} /></a>
                     <a href={`/comprobante/${v.id}?formato=ticket&imprimir=1`} target="_blank" rel="noopener" className={ICONO} title="Imprimir ticket 80 mm" aria-label={`Imprimir ticket de ${v.serie}-${v.numero}`}><Printer size={16} /></a>
                     <a href={`/comprobante/${v.id}?formato=a4&imprimir=1`} target="_blank" rel="noopener" className={ICONO} title="Imprimir en A4" aria-label={`Imprimir A4 de ${v.serie}-${v.numero}`}><FileText size={16} /></a>
-                    {u.rol === "ADMIN" && v.estado === "EMITIDA" ? <Boton tam="sm" variante="fantasma" className="text-rojo" onClick={() => { setAnular(v); setMotivo(""); }}>Anular</Boton> : null}
+                    {u.roles.includes("ADMIN") && v.estado === "EMITIDA" ? <Boton tam="sm" variante="fantasma" className="text-rojo" onClick={() => { setAnular(v); setMotivo(""); }}>Anular</Boton> : null}
                   </div>
                 </td>
               </tr>

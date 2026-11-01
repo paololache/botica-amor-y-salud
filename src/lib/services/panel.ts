@@ -1,26 +1,19 @@
 import { and, eq, gte, sql } from "drizzle-orm";
 import { schema, type Db } from "@/db";
 import type { Sesion } from "../auth";
+import { tieneRol } from "../permisos";
 import { hoy as hoyLima, inicioDiaLima, r2, sumarDias } from "../util";
 import { alertasDelRol, evaluarAlertas } from "./alertas";
 import { estadoCaja } from "./caja";
 import { misComisiones } from "./comisiones";
 import { tarjetasPanel } from "./reportes";
 
-const { venta, parametro } = schema;
-
-/** En el plan Hobby de Vercel el cron corre una vez al día: el panel recalcula las alertas si tienen más de 15 minutos. */
-async function alertasAlDia(db: Db) {
-  const [p] = await db.select().from(parametro).where(eq(parametro.clave, "alertas_evaluadas_en"));
-  if (p && Date.now() - Number(p.valor) < 15 * 60 * 1000) return;
-  await db.insert(parametro).values({ clave: "alertas_evaluadas_en", valor: String(Date.now()) }).onConflictDoUpdate({ target: parametro.clave, set: { valor: String(Date.now()) } });
-  await evaluarAlertas(db);
-}
+const { venta } = schema;
 
 export async function panel(db: Db, user: Sesion) {
   const hoy = hoyLima();
-  await alertasAlDia(db);
-  const propias = !["ADMIN", "CONTADOR"].includes(user.rol);
+  await evaluarAlertas(db);
+  const propias = !tieneRol(user.roles, "ADMIN", "CONTADOR");
   const ventasDe = async (desde: string) => {
     const cond = [eq(venta.estado, "EMITIDA"), gte(venta.fecha, inicioDiaLima(desde))];
     if (propias) cond.push(eq(venta.usuarioId, user.id));
@@ -28,10 +21,10 @@ export async function panel(db: Db, user: Sesion) {
     return { total: r2(r?.total ?? 0), tickets: r?.tickets ?? 0 };
   };
   const [dia, mes, alertas, caja, comisiones, tarjetas] = await Promise.all([
-    ventasDe(hoy), ventasDe(hoy.slice(0, 8) + "01"), alertasDelRol(db, user.rol, { limite: 40 }),
-    ["ADMIN", "CAJERO", "VENDEDOR", "QF"].includes(user.rol) ? estadoCaja(db, user) : Promise.resolve(null),
-    ["CAJERO", "VENDEDOR", "QF"].includes(user.rol) ? misComisiones(db, user.id) : Promise.resolve(null),
-    tarjetasPanel(db, user.rol),
+    ventasDe(hoy), ventasDe(hoy.slice(0, 8) + "01"), alertasDelRol(db, user.roles, { limite: 0 }),
+    tieneRol(user.roles, "ADMIN", "CAJERO", "VENDEDOR", "QF") ? estadoCaja(db, user) : Promise.resolve(null),
+    tieneRol(user.roles, "CAJERO", "VENDEDOR", "QF") ? misComisiones(db, user.id) : Promise.resolve(null),
+    tarjetasPanel(db, user.roles),
   ]);
   const ayer = await (async () => {
     const cond = [eq(venta.estado, "EMITIDA"), gte(venta.fecha, inicioDiaLima(sumarDias(hoy, -1))), sql`${venta.fecha} < ${inicioDiaLima(hoy).toISOString()}`];

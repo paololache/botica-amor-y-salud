@@ -1,7 +1,9 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
+import { texto } from "../validacion";
 import { schema, type Db } from "@/db";
 import type { Sesion } from "../auth";
+import { tieneRol } from "../permisos";
 import { ErrorNegocio, r4 } from "../util";
 import { bloquearProductos, registrarKardex, restarLote, sumarLote } from "./inventario";
 import { parametros } from "./parametros";
@@ -14,9 +16,9 @@ export async function listarMotivos(db: Db) {
 
 export const esquemaMovimiento = z.object({
   motivoId: z.number().int(),
-  descripcion: z.string().min(10, "mínimo 10 caracteres"),
+  descripcion: texto(10, "mínimo 10 caracteres"),
   evidencia: z.string().optional(),
-  items: z.array(z.object({ loteId: z.number().int(), unidades: z.number().int().positive() })).min(1),
+  items: z.array(z.object({ loteId: z.number().int(), unidades: z.number().int().positive().max(1000000) })).min(1),
 });
 
 async function aplicar(tx: Db, movId: number, tipo: string, motivoCodigo: string, usuarioId: number) {
@@ -70,7 +72,7 @@ export async function listarMovimientos(db: Db, user: Sesion, estado?: string) {
   const ids = rows.map((r) => r.id);
   const det = ids.length ? await db.select({ movimientoId: movDetalle.movimientoId, producto: producto.nombre, lote: lote.numero, vencimiento: lote.vencimiento, unidades: movDetalle.unidades })
     .from(movDetalle).innerJoin(producto, eq(producto.id, movDetalle.productoId)).innerJoin(lote, eq(lote.id, movDetalle.loteId)).where(inArray(movDetalle.movimientoId, ids)) : [];
-  return rows.map((r) => ({ ...r, puedoAprobar: r.estado === "PENDIENTE" && r.registradoPorId !== user.id && (user.rol === "ADMIN" || user.rol === r.rolAprobador), items: det.filter((d) => d.movimientoId === r.id) }));
+  return rows.map((r) => ({ ...r, puedoAprobar: r.estado === "PENDIENTE" && r.registradoPorId !== user.id && tieneRol(user.roles, "ADMIN", r.rolAprobador), items: det.filter((d) => d.movimientoId === r.id) }));
 }
 
 export const esquemaDecision = z.object({ decision: z.enum(["APROBAR", "RECHAZAR"]), comentario: z.string().optional() });
@@ -81,7 +83,7 @@ export async function decidirMovimiento(db: Db, user: Sesion, id: number, input:
   if (!mov || mov.estado !== "PENDIENTE") throw new ErrorNegocio("ESTADO", "Este movimiento ya no está pendiente.");
   const [m] = await db.select().from(motivo).where(eq(motivo.id, mov.motivoId));
   if (mov.registradoPor === user.id) throw new ErrorNegocio("SEGREGACION", "No puedes aprobar un movimiento que registraste tú (RN-09).", 403);
-  if (user.rol !== "ADMIN" && user.rol !== m.rolAprobador) throw new ErrorNegocio("SIN_PERMISO", "Este motivo lo aprueba otro rol.", 403);
+  if (!tieneRol(user.roles, "ADMIN", m.rolAprobador)) throw new ErrorNegocio("SIN_PERMISO", "Este motivo lo aprueba otro rol.", 403);
   if (input.decision === "RECHAZAR" && !input.comentario?.trim()) throw new ErrorNegocio("COMENTARIO", "Escribe el motivo del rechazo.");
   await db.transaction(async (tx) => {
     if (input.decision === "APROBAR") await aplicar(tx, id, m.tipo, m.codigo, user.id);

@@ -1,8 +1,10 @@
 "use client";
+import Link from "next/link";
 import { useState } from "react";
 import { api, useDatos, soles, fechaCorta, hoyLima } from "@/lib/cliente";
-import { Boton, Cargando, Encabezado, Entrada, Insignia, Tarjeta, Vacio, useAviso } from "@/components/ui";
+import { Boton, Cargando, Encabezado, Entrada, Insignia, Pestanas, Tarjeta, Vacio, useAviso } from "@/components/ui";
 import { useUsuario } from "@/components/shell";
+import { tieneRol } from "@/lib/permisos";
 
 type Mias = { hoy: number; lineasHoy: number; mes: number; mesActual: string; dias: { fecha: string; total: number; lineas: number }[]; liquidaciones: { id: number; mes: string; total: number; estado: string; pagadoEn: string | null }[] };
 type Mes = { mes: string; cerrable: boolean; finDeMes: string; vendedores: { usuarioId: number; nombre: string; total: number; lineas: number; dias: number; liquidacion: { id: number; estado: string; total: number; pagadoEn: string | null } | null }[] };
@@ -11,7 +13,17 @@ const nombreMes = (m: string) => new Intl.DateTimeFormat("es-PE", { month: "long
 
 export default function Comisiones() {
   const u = useUsuario();
-  return u.rol === "ADMIN" || u.rol === "CONTADOR" ? <Administracion /> : <Mias />;
+  const gestiona = tieneRol(u.roles, "ADMIN", "CONTADOR");
+  const vende = tieneRol(u.roles, "QF", "CAJERO", "VENDEDOR");
+  const [vista, setVista] = useState<"vendedores" | "mias">("vendedores");
+  if (!gestiona) return <Mias />;
+  if (!vende) return <Administracion />;
+  return (
+    <div>
+      <div className="mb-5"><Pestanas valor={vista} alCambiar={setVista} opciones={[{ valor: "vendedores", texto: "Por vendedor" }, { valor: "mias", texto: "Mis comisiones" }]} /></div>
+      {vista === "vendedores" ? <Administracion /> : <Mias />}
+    </div>
+  );
 }
 
 function Mias() {
@@ -58,7 +70,7 @@ function Administracion() {
     <div>
       <Encabezado titulo="Comisiones por vendedor" bajada="El sistema consolida las comisiones cada día; al cierre de mes apruebas el acumulado y registras el pago.">
         <Entrada type="month" value={mes} max={hoyLima().slice(0, 7)} onChange={(e) => setMes(e.target.value)} className="w-44" aria-label="Mes" />
-        {u.rol === "ADMIN" ? <Boton variante="amor" cargando={ocupado} disabled={!datos?.cerrable || !pendientesLiq} onClick={cerrar} title={datos && !datos.cerrable ? `Disponible desde el ${fechaCorta(datos.finDeMes)}` : undefined}>Cerrar mes</Boton> : null}
+        {u.roles.includes("ADMIN") ? <Boton variante="amor" cargando={ocupado} disabled={!datos?.cerrable || !pendientesLiq} onClick={cerrar} title={datos && !datos.cerrable ? `Disponible desde el ${fechaCorta(datos.finDeMes)}` : undefined}>Cerrar mes</Boton> : null}
       </Encabezado>
       {!datos ? <Cargando /> : (
         <>
@@ -69,11 +81,12 @@ function Administracion() {
           </div>
           <Tarjeta>
             {datos.vendedores.length ? (
-              <table className="tabla"><thead><tr><th>Vendedor</th><th className="num">Días con comisión</th><th className="num">Productos</th><th className="num">Acumulado</th><th>Estado</th><th /></tr></thead>
+              <table className="tabla"><thead><tr><th>Vendedor</th><th className="num">Días con comisión</th><th className="num">Productos</th><th className="num">Acumulado</th><th>Estado</th><th>Detalle</th><th /></tr></thead>
                 <tbody>{datos.vendedores.map((v) => (
                   <tr key={v.usuarioId}><td className="font-semibold">{v.nombre}</td><td className="num">{v.dias}</td><td className="num">{v.lineas}</td><td className="num cifra text-[17px]">{soles(v.total)}</td>
                     <td>{v.liquidacion ? (v.liquidacion.estado === "PAGADA" ? <Insignia tono="ok">Pagada {fechaCorta(v.liquidacion.pagadoEn)}</Insignia> : <Insignia tono="azul">Aprobada</Insignia>) : <Insignia>Acumulando</Insignia>}</td>
-                    <td className="text-right">{u.rol === "ADMIN" && v.liquidacion?.estado === "APROBADA" ? <Boton tam="sm" onClick={async () => { try { await api(`/api/comisiones/liquidaciones/${v.liquidacion!.id}/pagar`, { metodo: "POST" }); avisar("ok", `Pago registrado para ${v.nombre}.`); recargar(); } catch (e) { avisar("error", (e as Error).message); } }}>Registrar pago</Boton> : null}</td></tr>
+                    <td className="whitespace-nowrap"><Link className="font-semibold text-vino-2" href={`/comisiones/detalle?usuario=${v.usuarioId}&mes=${mes}`}>Ver detalle</Link></td>
+                    <td className="text-right">{u.roles.includes("ADMIN") && v.liquidacion?.estado === "APROBADA" ? <Boton tam="sm" onClick={async () => { try { await api(`/api/comisiones/liquidaciones/${v.liquidacion!.id}/pagar`, { metodo: "POST" }); avisar("ok", `Pago registrado para ${v.nombre}.`); recargar(); } catch (e) { avisar("error", (e as Error).message); } }}>Registrar pago</Boton> : null}</td></tr>
                 ))}</tbody></table>
             ) : <Vacio titulo="Sin comisiones en este mes" />}
           </Tarjeta>

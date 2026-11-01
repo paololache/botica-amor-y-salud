@@ -1,7 +1,12 @@
+import { z } from "zod";
 import { ruta } from "@/lib/api";
 import { consultarKardex } from "@/lib/services/kardex";
+import { fechaOpcional } from "@/lib/validacion";
+
+const id = z.coerce.number().int().positive().max(2147483647);
+const esquema = z.object({ productoId: id, desde: fechaOpcional, hasta: fechaOpcional, loteId: z.preprocess((v) => v || undefined, id.optional()) });
 
 export const GET = ruta("kardex", ({ db, req }) => {
-  const u = req.nextUrl.searchParams;
-  return consultarKardex(db, Number(u.get("productoId")), u.get("desde") ?? undefined, u.get("hasta") ?? undefined, u.get("loteId") ? Number(u.get("loteId")) : undefined);
+  const q = esquema.parse(Object.fromEntries(req.nextUrl.searchParams));
+  return consultarKardex(db, q.productoId, q.desde, q.hasta, q.loteId);
 });

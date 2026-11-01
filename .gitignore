@@ -1,6 +1,7 @@
 node_modules
 .next
 .pglite
+.pglite-*
 .env
 .env.local
 *.tsbuildinfo

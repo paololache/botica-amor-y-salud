@@ -1,6 +1,8 @@
 "use client";
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from "react";
 import { X, CircleCheck, TriangleAlert } from "lucide-react";
+import { limpiarNumero } from "@/lib/util";
+import { EVENTO_ERROR } from "@/lib/cliente";
 
 type Variante = "amor" | "petroleo" | "borde" | "fantasma" | "peligro";
 const VARIANTES: Record<Variante, string> = {
@@ -36,6 +38,25 @@ export function Campo({ etiqueta, ayuda, error, children, className = "" }: { et
 const baseInput = "h-10 rounded-xl border border-foil-3 bg-papel px-3 text-[14.5px] text-ink placeholder:text-ink-3 focus:border-vino-2 focus:outline-none focus:ring-3 focus:ring-rosado/50 transition";
 export function Entrada({ className = "", ...p }: InputHTMLAttributes<HTMLInputElement>) {
   return <input {...p} className={`${baseInput} ${/(^|\s)w-/.test(className) ? "" : "w-full"} ${className}`} />;
+}
+/** Campo numérico: según `inputMode` admite enteros ("numeric") o decimales; descarta lo demás y avisa. `crudo` es para celdas de tabla con estilo propio. */
+export function EntradaNumero({ crudo, className = "", onChange, onBlur, ...p }: InputHTMLAttributes<HTMLInputElement> & { crudo?: boolean }) {
+  const [rechazado, setRechazado] = useState(false);
+  const entero = p.inputMode === "numeric";
+  const campo = (
+    <input {...p} className={crudo ? className : `${baseInput} ${/(^|\s)w-/.test(className) ? "" : "w-full"} ${className}`} aria-invalid={rechazado}
+      onBlur={(e) => { setRechazado(false); onBlur?.(e); }}
+      onChange={(e) => {
+        const escrito = e.target.value;
+        const limpio = limpiarNumero(escrito, entero);
+        setRechazado(limpio !== (entero ? escrito : escrito.replace(/,/g, ".")));
+        e.target.value = limpio;
+        onChange?.(e);
+      }} />
+  );
+  const aviso = entero ? "Solo números enteros" : "Solo números";
+  if (crudo) return <span className="relative inline-block">{campo}{rechazado ? <span role="alert" className="absolute right-0 top-full z-10 mt-1 whitespace-nowrap rounded-md bg-rojo px-2 py-0.5 text-[11.5px] font-medium text-white">{aviso}</span> : null}</span>;
+  return <span className="block">{campo}{rechazado ? <span role="alert" className="block text-[12px] text-rojo mt-1">{aviso}</span> : null}</span>;
 }
 export function Selector({ className = "", children, ...p }: SelectHTMLAttributes<HTMLSelectElement>) {
   return <select {...p} className={`${baseInput} pr-8 ${/(^|\s)w-/.test(className) ? "" : "w-full"} ${className}`}>{children}</select>;
@@ -113,6 +134,11 @@ export function ProveedorAvisos({ children }: { children: ReactNode }) {
     setAvisos((a) => [...a, { id, tipo, texto }]);
     setTimeout(() => setAvisos((a) => a.filter((x) => x.id !== id)), tipo === "error" ? 6000 : 3500);
   }, []);
+  useEffect(() => {
+    const alFallar = (e: Event) => avisar("error", (e as CustomEvent<string>).detail);
+    window.addEventListener(EVENTO_ERROR, alFallar);
+    return () => window.removeEventListener(EVENTO_ERROR, alFallar);
+  }, [avisar]);
   return (
     <AvisoCtx.Provider value={avisar}>
       {children}

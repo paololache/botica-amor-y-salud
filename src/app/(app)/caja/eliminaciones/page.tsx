@@ -6,6 +6,7 @@ import { useDatos, soles, fechaHora } from "@/lib/cliente";
 import { descargarCsv } from "@/lib/csv";
 import { Boton, Cargando, Encabezado, Insignia, Selector, Tarjeta, Vacio } from "@/components/ui";
 import { useUsuario } from "@/components/shell";
+import { tieneRol } from "@/lib/permisos";
 
 type E = {
   id: number; fecha: string; eliminadoPor: string; sesionId: number | null; caja: string | null; cajero: string | null; estadoSesion: string | null; porOtraPersona: boolean;
@@ -15,8 +16,8 @@ type E = {
 export default function Eliminaciones() {
   const u = useUsuario();
   const [dias, setDias] = useState(30);
-  const { datos, error } = useDatos<E[]>(u.rol === "ADMIN" || u.rol === "CONTADOR" ? `/api/caja/eliminaciones?dias=${dias}` : null);
-  if (u.rol !== "ADMIN" && u.rol !== "CONTADOR") return <Tarjeta><Vacio titulo="Sin acceso">Este registro solo lo ven el administrador y el contador.</Vacio></Tarjeta>;
+  const { datos, error } = useDatos<E[]>(tieneRol(u.roles, "ADMIN", "CONTADOR") ? `/api/caja/eliminaciones?dias=${dias}` : null);
+  if (!tieneRol(u.roles, "ADMIN", "CONTADOR")) return <Tarjeta><Vacio titulo="Sin acceso">Este registro solo lo ven el administrador y el contador.</Vacio></Tarjeta>;
   const lista = datos ?? [];
   const total = lista.reduce((a, e) => a + e.monto, 0);
   const exportar = () => descargarCsv(`eliminaciones-caja-${dias}d.csv`,

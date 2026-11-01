@@ -2,9 +2,10 @@
 import { useState } from "react";
 import { Trash } from "lucide-react";
 import { api, useDatos, soles, fechaHora, vence } from "@/lib/cliente";
-import { Boton, Campo, Cargando, Encabezado, Entrada, Insignia, Pestanas, Sello, Selector, Tarjeta, Vacio, useAviso } from "@/components/ui";
+import { Boton, Campo, Cargando, Encabezado, Entrada, EntradaNumero, Insignia, Pestanas, Sello, Selector, Tarjeta, Vacio, useAviso } from "@/components/ui";
 import { BuscadorProducto } from "@/components/buscador-producto";
 import { useUsuario } from "@/components/shell";
+import { tieneRol } from "@/lib/permisos";
 
 type Motivo = { id: number; codigo: string; nombre: string; tipo: string; requiereAprobacion: boolean; rolAprobador: string; requiereEvidencia: boolean };
 type Mov = { id: number; motivo: string; tipo: string; rolAprobador: string; descripcion: string; evidencia: string | null; estado: string; totalCosto?: number; fecha: string; registradoPor: string; comentario: string | null; puedoAprobar: boolean; items: { producto: string; lote: string; vencimiento: string; unidades: number }[] };
@@ -13,7 +14,7 @@ type Linea = { producto: string; lotes: Lote[]; loteId: number; unidades: string
 
 export default function Movimientos() {
   const u = useUsuario();
-  const [tab, setTab] = useState<"nuevo" | "bandeja" | "historial">(u.rol === "INVENTARIADOR" ? "nuevo" : "bandeja");
+  const [tab, setTab] = useState<"nuevo" | "bandeja" | "historial">(tieneRol(u.roles, "ADMIN", "QF") ? "bandeja" : "nuevo");
   const pend = useDatos<Mov[]>("/api/movimientos?estado=PENDIENTE");
   const porAprobar = (pend.datos ?? []).filter((m) => m.puedoAprobar).length;
   return (
@@ -21,7 +22,7 @@ export default function Movimientos() {
       <Encabezado titulo="Salidas y entradas" bajada="Toda baja de stock sin venta lleva un motivo del catálogo; el stock solo se mueve al aprobar." />
       <div className="mb-5"><Pestanas valor={tab} alCambiar={setTab} opciones={[
         { valor: "nuevo", texto: "Registrar" },
-        ...(u.rol === "ADMIN" || u.rol === "QF" ? [{ valor: "bandeja" as const, texto: "Por aprobar", extra: porAprobar ? <Insignia tono="amor">{porAprobar}</Insignia> : undefined }] : []),
+        ...(tieneRol(u.roles, "ADMIN", "QF") ? [{ valor: "bandeja" as const, texto: "Por aprobar", extra: porAprobar ? <Insignia tono="amor">{porAprobar}</Insignia> : undefined }] : []),
         { valor: "historial", texto: "Historial" },
       ]} /></div>
       {tab === "nuevo" ? <Nuevo alTerminar={pend.recargar} /> : tab === "bandeja" ? <Lista estado="PENDIENTE" soloMias recargarPadre={pend.recargar} /> : <Lista />}
@@ -52,11 +53,11 @@ function Nuevo({ alTerminar }: { alTerminar: () => void }) {
       <Tarjeta titulo="Motivo">
         <div className="px-5 pb-5 space-y-3">
           {!motivos.datos ? <Cargando alto="h-40" /> : (
-            <div className="space-y-1.5 max-h-[340px] overflow-y-auto pr-1">
+            <div className="space-y-1.5">
               {["SALIDA", "ENTRADA"].map((t) => (
                 <div key={t}>
                   <p className="text-[11.5px] font-semibold text-ink-3 uppercase tracking-wide mt-2 mb-1">{t === "SALIDA" ? "Salidas" : "Entradas"}</p>
-                  {motivos.datos!.filter((x) => x.tipo === t).map((x) => (
+                  {motivos.datos!.filter((x) => x.tipo === t).sort((a, b) => Number(b.codigo === "VENCIMIENTO") - Number(a.codigo === "VENCIMIENTO")).map((x) => (
                     <button key={x.id} onClick={() => setMotivoId(x.id)} className={`w-full text-left rounded-xl px-3 py-2 border ${motivoId === x.id ? "border-petroleo bg-[#f1f8f6]" : "border-transparent hover:bg-foil/60"}`}>
                       <span className="font-semibold text-[14px]">{x.nombre}</span>
                       <span className="block text-[12px] text-ink-3">{x.requiereAprobacion ? `Aprueba ${x.rolAprobador === "QF" ? "el QF" : "el administrador"}` : "Sin aprobación bajo S/ 50"}{x.requiereEvidencia ? " · exige evidencia" : ""}</span>
@@ -84,7 +85,7 @@ function Nuevo({ alTerminar }: { alTerminar: () => void }) {
               return (
                 <tr key={i}><td className="font-semibold">{l.producto}</td>
                   <td><select className="h-9 rounded-lg border border-foil-3 px-2 text-[13px] bg-papel" value={l.loteId} onChange={(e) => setLineas((ls) => ls.map((x, k) => (k === i ? { ...x, loteId: Number(e.target.value) } : x)))}>{l.lotes.map((x) => <option key={x.id} value={x.id}>{x.numero} · vence {vence(x.vencimiento)} · {x.cantidad} und.</option>)}</select></td>
-                  <td className="num"><input className="w-20 h-9 rounded-lg border border-foil-3 text-right px-2" inputMode="numeric" value={l.unidades} onChange={(e) => setLineas((ls) => ls.map((x, k) => (k === i ? { ...x, unidades: e.target.value.replace(/\D/g, "") } : x)))} aria-label="Unidades" />
+                  <td className="num"><EntradaNumero crudo className="w-20 h-9 rounded-lg border border-foil-3 text-right px-2" inputMode="numeric" value={l.unidades} onChange={(e) => setLineas((ls) => ls.map((x, k) => (k === i ? { ...x, unidades: e.target.value.replace(/\D/g, "") } : x)))} aria-label="Unidades" />
                     {m?.tipo === "SALIDA" && Number(l.unidades) > lote.cantidad ? <span className="block text-[11.5px] text-rojo">Máx. {lote.cantidad}</span> : null}</td>
                   <td><button className="size-8 grid place-items-center rounded-lg text-ink-3 hover:text-rojo" aria-label="Quitar" onClick={() => setLineas((ls) => ls.filter((_, k) => k !== i))}><Trash size={15} /></button></td></tr>
               );

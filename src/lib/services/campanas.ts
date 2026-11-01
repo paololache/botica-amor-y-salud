@@ -1,5 +1,6 @@
 import { and, desc, eq, gte, inArray, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
+import { fecha, fechaOpcional, texto } from "../validacion";
 import { schema, type Db } from "@/db";
 import type { Sesion } from "../auth";
 import { ErrorNegocio, hoy as hoyLima } from "../util";
@@ -43,10 +44,10 @@ export async function listarCampanas(db: Db) {
 export const esquemaCampana = z.object({
   codigo: z.string().min(1),
   loteId: z.number().int().nullable().optional(),
-  nombre: z.string().min(3).max(100),
+  nombre: texto(3).max(100),
   porcentaje: z.number().gt(0).max(100),
-  inicio: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  fin: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  inicio: fecha,
+  fin: fecha,
   observacion: z.string().max(250).optional(),
   activarAhora: z.boolean().optional(),
 });
@@ -97,7 +98,7 @@ export async function alternarCampana(db: Db, user: Sesion, productoId: number) 
   return { id: c.id, estado: nuevo };
 }
 
-export const esquemaCambioCampana = z.object({ accion: z.enum(["EXTENDER", "FINALIZAR"]), fin: z.string().optional() });
+export const esquemaCambioCampana = z.object({ accion: z.enum(["EXTENDER", "FINALIZAR"]), fin: fechaOpcional });
 
 export async function cambiarCampana(db: Db, user: Sesion, id: number, input: z.infer<typeof esquemaCambioCampana>) {
   const [c] = await db.select().from(campana).where(eq(campana.id, id));

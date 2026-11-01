@@ -1,0 +1,2 @@
+DROP INDEX "compra_doc_uq";--> statement-breakpoint
+CREATE UNIQUE INDEX "compra_doc_uq" ON "compra" USING btree ("proveedor_id","tipo_comprobante","serie","numero") WHERE "compra"."estado" <> 'ANULADA';

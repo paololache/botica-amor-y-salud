@@ -13,13 +13,14 @@ export async function preparar() {
 export async function base(db: Db) {
   const h = await bcrypt.hash("x", 4);
   const [admin, qf, caja1, caja2, almacen] = await db.insert(schema.usuario).values([
-    { nombre: "Admin", login: "admin", passwordHash: h, rol: "ADMIN" },
-    { nombre: "QF", login: "qf", passwordHash: h, rol: "QF" },
-    { nombre: "Caja 1", login: "caja1", passwordHash: h, rol: "CAJERO" },
-    { nombre: "Caja 2", login: "caja2", passwordHash: h, rol: "CAJERO" },
-    { nombre: "Almacén", login: "almacen", passwordHash: h, rol: "INVENTARIADOR" },
+    { nombre: "Admin", login: "admin", passwordHash: h, roles: ["ADMIN"] },
+    { nombre: "QF", login: "qf", passwordHash: h, roles: ["QF"] },
+    { nombre: "Caja 1", login: "caja1", passwordHash: h, roles: ["CAJERO"] },
+    { nombre: "Caja 2", login: "caja2", passwordHash: h, roles: ["CAJERO"] },
+    { nombre: "Almacén", login: "almacen", passwordHash: h, roles: ["INVENTARIADOR"] },
   ]).returning();
-  const s = (u: typeof admin): Sesion => ({ id: u.id, nombre: u.nombre, login: u.login, rol: u.rol });
+  const s = (u: typeof admin): Sesion => ({ id: u.id, nombre: u.nombre, login: u.login, roles: u.roles });
+  await db.insert(schema.laboratorio).values([{ nombre: "IQ Farma", clave: "iqfarma" }, { nombre: "Genfar", clave: "genfar" }, { nombre: "Portugal", clave: "portugal" }]);
   const [cat] = await db.insert(schema.categoria).values({ nombre: "Vitaminas" }).returning();
   const [c1] = await db.insert(schema.caja).values({ nombre: "CAJA 01" }).returning();
   const [c2] = await db.insert(schema.caja).values({ nombre: "CAJA 02" }).returning();

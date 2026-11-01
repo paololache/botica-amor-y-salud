@@ -1,8 +1,9 @@
-import { and, desc, eq, or, sql, type SQL } from "drizzle-orm";
+import { and, arrayOverlaps, desc, eq, or, sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
+import { fechaOpcional } from "../validacion";
 import { schema, type Db } from "@/db";
 import type { Sesion } from "../auth";
-import { verCostos, type Rol } from "../permisos";
+import { tieneRol, verCostos, type Rol } from "../permisos";
 import { evaluar, validarFormula, variables } from "../formula";
 import { filas } from "../sqlrows";
 import { diasEntre, ErrorNegocio, hoy as hoyLima, inicioDiaLima, r2, sumarDias } from "../util";
@@ -26,7 +27,7 @@ export const DIMENSIONES: Record<string, { nombre: string; sql: string }> = {
   total: { nombre: "Total", sql: "'Total'" },
   categoria: { nombre: "Categoría", sql: "coalesce(cat.nombre, 'Sin categoría')" },
   producto: { nombre: "Producto", sql: "p.nombre" },
-  laboratorio: { nombre: "Laboratorio", sql: "coalesce(p.laboratorio, '—')" },
+  laboratorio: { nombre: "Laboratorio", sql: "coalesce(lab.nombre, '—')" },
   vendedor: { nombre: "Vendedor", sql: "u.nombre" },
   dia: { nombre: "Día", sql: "to_char(v.fecha at time zone 'America/Lima', 'YYYY-MM-DD')" },
   semana: { nombre: "Semana", sql: "to_char(date_trunc('week', v.fecha at time zone 'America/Lima'), 'YYYY-MM-DD')" },
@@ -56,30 +57,30 @@ export function esSensible(formula: string): boolean {
   return variables(formula).some((v) => BASE[v]?.sensible);
 }
 
-export async function metricasDisponibles(db: Db, rol: Rol) {
+export async function metricasDisponibles(db: Db, roles: readonly Rol[]) {
   const der = await db.select().from(metrica).orderBy(metrica.id);
-  const costos = verCostos(rol);
+  const costos = verCostos(roles);
   const base = Object.entries(BASE).filter(([, b]) => costos || !b.sensible).map(([codigo, b]) => ({ codigo, nombre: b.nombre, unidad: b.unidad, tipo: "BASE", sensible: !!b.sensible }));
   const derivadas: (Derivada & { tipo: string })[] = der
     .map((d) => ({ id: d.id, codigo: d.codigo, nombre: d.nombre, formula: d.formula, unidad: d.unidad, roles: d.roles, enPanel: d.enPanel, sensible: esSensible(d.formula), tipo: "PERSONALIZADA" }))
-    .filter((d) => (costos || !d.sensible) && (rol === "ADMIN" || d.roles.includes(rol)));
+    .filter((d) => (costos || !d.sensible) && (roles.includes("ADMIN") || tieneRol(roles, ...(d.roles as Rol[]))));
   return { base, derivadas, dimensiones: Object.entries(DIMENSIONES).map(([codigo, d]) => ({ codigo, nombre: d.nombre })) };
 }
 
 export const esquemaConsulta = z.object({
   agrupar: z.string().default("total"),
   metricas: z.array(z.string()).min(1).max(10),
-  desde: z.string().optional(),
-  hasta: z.string().optional(),
+  desde: fechaOpcional,
+  hasta: fechaOpcional,
   filtros: z.record(z.string(), z.string()).optional(),
   orden: z.string().optional(),
   limite: z.number().int().min(1).max(500).optional(),
 });
 
-export async function ejecutarReporte(db: Db, rol: Rol, q: z.infer<typeof esquemaConsulta>) {
+export async function ejecutarReporte(db: Db, roles: readonly Rol[], q: z.infer<typeof esquemaConsulta>) {
   const dim = DIMENSIONES[q.agrupar];
   if (!dim) throw new ErrorNegocio("DIMENSION", "Agrupación no válida.");
-  const disp = await metricasDisponibles(db, rol);
+  const disp = await metricasDisponibles(db, roles);
   const derivadas = new Map(disp.derivadas.map((d) => [d.codigo, d]));
   const baseOk = new Set(disp.base.map((b) => b.codigo));
   const necesarias = new Set<string>();
@@ -106,6 +107,7 @@ export async function ejecutarReporte(db: Db, rol: Rol, q: z.infer<typeof esquem
     join venta v on v.id = vd.venta_id
     join producto p on p.id = vd.producto_id
     left join categoria cat on cat.id = p.categoria_id
+    left join laboratorio lab on lab.id = p.laboratorio_id
     join usuario u on u.id = v.usuario_id
     left join comision c on c.venta_detalle_id = vd.id and c.estado <> 'REVERTIDA' and c.origen <> 'AJUSTE'
     left join campana cam on cam.id = c.campana_id
@@ -204,16 +206,16 @@ export async function guardarReporte(db: Db, user: Sesion, input: z.infer<typeof
 }
 
 export async function misReportes(db: Db, user: Sesion) {
-  return db.select().from(reporteGuardado).where(or(eq(reporteGuardado.propietarioId, user.id), sql`${user.rol} = any(${reporteGuardado.rolesCompartidos})`)).orderBy(desc(reporteGuardado.id));
+  return db.select().from(reporteGuardado).where(or(eq(reporteGuardado.propietarioId, user.id), arrayOverlaps(reporteGuardado.rolesCompartidos, user.roles))).orderBy(desc(reporteGuardado.id));
 }
 
 /** Tarjetas del panel principal: métricas marcadas «mostrar en el panel», calculadas para hoy. */
-export async function tarjetasPanel(db: Db, rol: Rol) {
-  const disp = await metricasDisponibles(db, rol);
+export async function tarjetasPanel(db: Db, roles: readonly Rol[]) {
+  const disp = await metricasDisponibles(db, roles);
   const enPanel = disp.derivadas.filter((d) => d.enPanel).slice(0, 4);
   if (!enPanel.length) return [];
   const hoy = hoyLima();
-  const r = await ejecutarReporte(db, rol, { agrupar: "total", metricas: enPanel.map((m) => m.codigo), desde: hoy, hasta: hoy });
+  const r = await ejecutarReporte(db, roles, { agrupar: "total", metricas: enPanel.map((m) => m.codigo), desde: hoy, hasta: hoy });
   return enPanel.map((m) => ({ codigo: m.codigo, nombre: m.nombre, unidad: m.unidad, valor: r.totales?.[m.codigo] ?? null }));
 }
 

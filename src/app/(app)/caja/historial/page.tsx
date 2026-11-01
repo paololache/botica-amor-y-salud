@@ -4,6 +4,7 @@ import { ShieldAlert } from "lucide-react";
 import { useDatos, soles, fechaHora } from "@/lib/cliente";
 import { Boton, Cargando, Encabezado, Insignia, Tarjeta, Vacio } from "@/components/ui";
 import { useUsuario } from "@/components/shell";
+import { tieneRol } from "@/lib/permisos";
 
 type S = { id: number; caja: string; cajero: string; turno: string; abiertaEn: string; cerradaEn: string | null; estado: string; diferencia: number | null };
 
@@ -13,7 +14,7 @@ export default function Historial() {
   return (
     <div>
       <Encabezado titulo="Cierres de caja" bajada="Cada cierre tiene su reporte con el arqueo por medio de pago.">
-        {u.rol === "ADMIN" || u.rol === "CONTADOR" ? <Link href="/caja/eliminaciones"><Boton variante="borde"><ShieldAlert size={16} /> Eliminaciones</Boton></Link> : null}
+        {tieneRol(u.roles, "ADMIN", "CONTADOR") ? <Link href="/caja/eliminaciones"><Boton variante="borde"><ShieldAlert size={16} /> Eliminaciones</Boton></Link> : null}
       </Encabezado>
       <Tarjeta>
         {!datos ? <div className="p-5"><Cargando /></div> : datos.length ? (

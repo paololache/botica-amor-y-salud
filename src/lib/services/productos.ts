@@ -1,11 +1,13 @@
 import { and, asc, eq, gt, ilike, inArray, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
+import { fecha, monto, montoOCero } from "../validacion";
 import { schema, type Db } from "@/db";
 import type { Sesion } from "../auth";
 import { ErrorNegocio, hoy as hoyLima, r2, r4, sumarDias } from "../util";
 import { estadoEfectivo } from "./campanas";
+import { catalogoLaboratorios } from "./laboratorios";
 
-const { producto, presentacion, lote, categoria, campana, complemento, kardex, auditoria } = schema;
+const { producto, presentacion, laboratorio, lote, categoria, campana, complemento, kardex, auditoria } = schema;
 
 async function stockYVencimiento(db: Db, ids: number[], hoy: string) {
   if (!ids.length) return new Map<number, { stock: number; vigente: number; proxVenc: string | null }>();
@@ -47,11 +49,13 @@ async function enriquecer(db: Db, prods: (typeof producto.$inferSelect)[], hoy: 
   const pres = ids.length ? await db.select().from(presentacion).where(and(inArray(presentacion.productoId, ids), eq(presentacion.activo, true))).orderBy(asc(presentacion.factor)) : [];
   const st = await stockYVencimiento(db, ids, hoy);
   const camps = await campanasDe(db, ids, hoy);
+  const labIds = [...new Set(prods.map((p) => p.laboratorioId).filter((id): id is number => id !== null))];
+  const labs = new Map((labIds.length ? await db.select().from(laboratorio).where(inArray(laboratorio.id, labIds)) : []).map((l) => [l.id, l.nombre]));
   return prods.map((p) => {
     const c = camps.get(p.id);
     return {
       id: p.id, codigo: p.codigo, nombre: p.nombre, principioActivo: p.principioActivo, concentracion: p.concentracion, formaFarmaceutica: p.formaFarmaceutica,
-      registroSanitario: p.registroSanitario, registroVence: p.registroVence, laboratorio: p.laboratorio,
+      registroSanitario: p.registroSanitario, registroVence: p.registroVence, laboratorioId: p.laboratorioId, laboratorio: p.laboratorioId ? labs.get(p.laboratorioId) ?? null : null,
       condicionVenta: p.condicionVenta, ubicacion: p.ubicacion, stockMinimo: p.stockMinimo, costoPromedio: p.costoPromedio, porcentajeUtilidad: p.porcentajeUtilidad,
       stock: st.get(p.id)?.stock ?? 0, stockVigente: st.get(p.id)?.vigente ?? 0, proximoVencimiento: st.get(p.id)?.proxVenc ?? null,
       enPromocion: c?.estado === "ACTIVA", campana: c ?? null,
@@ -66,7 +70,7 @@ export async function listarStock(db: Db, opciones: { q?: string; categoriaId?: 
   if (opciones.q) {
     const t = opciones.q.trim();
     const patron = `%${t}%`;
-    cond.push(or(eq(producto.codigo, t), sql`exists (select 1 from presentacion pr where pr.producto_id = ${producto.id} and pr.codigo = ${t} and pr.activo)`, ilike(producto.nombre, patron), ilike(producto.principioActivo, patron), ilike(producto.laboratorio, patron))!);
+    cond.push(or(eq(producto.codigo, t), sql`exists (select 1 from presentacion pr where pr.producto_id = ${producto.id} and pr.codigo = ${t} and pr.activo)`, ilike(producto.nombre, patron), ilike(producto.principioActivo, patron), sql`exists (select 1 from laboratorio lb where lb.id = ${producto.laboratorioId} and lb.nombre ilike ${patron})`)!);
   }
   if (opciones.categoriaId) cond.push(eq(producto.categoriaId, opciones.categoriaId));
   if (opciones.filtro === "promocion") cond.push(sql`exists (select 1 from campana c where c.producto_id = ${producto.id} and c.fin >= ${hoy} and (c.estado = 'ACTIVA' or (c.estado = 'PROGRAMADA' and c.inicio <= ${hoy})))`);
@@ -76,9 +80,10 @@ export async function listarStock(db: Db, opciones: { q?: string; categoriaId?: 
   const prods = await db.select().from(producto).where(and(...cond)).orderBy(asc(producto.nombre)).limit(50).offset((pagina - 1) * 50);
   const [tot] = await db.select({ n: sql<number>`count(*)`.mapWith(Number) }).from(producto).where(and(...cond));
   const cats = await db.select().from(categoria).orderBy(categoria.nombre);
+  const laboratorios = await catalogoLaboratorios(db);
   const lista = await enriquecer(db, prods, hoy);
   const catMap = new Map(cats.map((c) => [c.id, c.nombre]));
-  return { productos: lista.map((p, i) => ({ ...p, categoria: catMap.get(prods[i].categoriaId ?? 0) ?? null })), total: tot?.n ?? 0, pagina, categorias: cats };
+  return { productos: lista.map((p, i) => ({ ...p, categoria: catMap.get(prods[i].categoriaId ?? 0) ?? null })), total: tot?.n ?? 0, pagina, categorias: cats, laboratorios };
 }
 
 export async function fichaProducto(db: Db, id: number) {
@@ -101,18 +106,19 @@ const empaque = z.object({ factor: z.number().int().min(2, "debe traer al menos 
 export const esquemaProducto = z.object({
   codigo: codigoBarras,
   nombre: z.string().trim().min(3, "mínimo 3 caracteres").max(120),
-  laboratorio: z.string().trim().min(2, "es obligatorio"),
+  laboratorioId: z.number({ message: "elige un laboratorio del catálogo" }).int(),
   principioActivo: z.string().trim().nullable().optional(),
   concentracion: z.string().trim().nullable().optional(),
   formaFarmaceutica: z.string().trim().nullable().optional(),
   registroSanitario: z.string().trim().nullable().optional(),
-  registroVence: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "fecha inválida").nullable().optional(),
+  registroVence: fecha.nullable().optional(),
   porcentajeUtilidad: z.number().min(0).max(999).default(30),
+  confirmarDuplicado: z.boolean().optional(),
   categoriaId: z.number().int().nullable().optional(),
   condicionVenta: z.enum(["LIBRE", "RECETA", "RECETA_RETENIDA"]).default("LIBRE"),
   stockMinimo: z.number().int().min(0).default(0),
-  costoUnitario: z.number().min(0),
-  precioUnidad: z.number().positive("el precio debe ser mayor a 0"),
+  costoUnitario: montoOCero,
+  precioUnidad: monto.refine((n) => n > 0, "el precio debe ser mayor a 0"),
   blister: empaque.nullable().optional(),
   caja: empaque.nullable().optional(),
 }).refine((d) => !d.blister || !d.caja || d.blister.factor !== d.caja.factor, { message: "el blíster y la caja no pueden traer las mismas unidades", path: ["caja"] })
@@ -142,8 +148,18 @@ async function validarCodigosLibres(db: Db, codigos: string[], excepto?: number)
   if (otraPres) throw new ErrorNegocio("CODIGO_DUPLICADO", `El código ${otraPres.codigo} ya pertenece a «${otraPres.nombre}».`, 409);
 }
 
+/** Mismo nombre con otro laboratorio es otro producto; con el mismo laboratorio suele ser un duplicado, y se pide confirmar. */
+async function avisarDuplicado(db: Db, d: EntradaProducto, excepto?: number) {
+  const [lab] = await db.select({ nombre: laboratorio.nombre }).from(laboratorio).where(eq(laboratorio.id, d.laboratorioId));
+  if (!lab) throw new ErrorNegocio("LABORATORIO_INVALIDO", "Elige un laboratorio del catálogo.");
+  if (d.confirmarDuplicado) return;
+  const mismo = and(eq(producto.activo, true), eq(producto.laboratorioId, d.laboratorioId), sql`lower(${producto.nombre}) = lower(${d.nombre})`);
+  const [otro] = await db.select({ codigo: producto.codigo }).from(producto).where(excepto ? and(mismo, ne(producto.id, excepto)) : mismo);
+  if (otro) throw new ErrorNegocio("POSIBLE_DUPLICADO", `Ya existe «${d.nombre}» de ${lab.nombre} con el código ${otro.codigo}. Confirma si es un producto distinto.`, 422);
+}
+
 const datosProducto = (d: EntradaProducto) => ({
-  codigo: d.codigo, nombre: d.nombre, laboratorio: d.laboratorio, principioActivo: d.principioActivo || null, concentracion: d.concentracion || null,
+  codigo: d.codigo, nombre: d.nombre, laboratorioId: d.laboratorioId, principioActivo: d.principioActivo || null, concentracion: d.concentracion || null,
   formaFarmaceutica: d.formaFarmaceutica || null, registroSanitario: d.registroSanitario || null, registroVence: d.registroVence || null,
   categoriaId: d.categoriaId ?? null, condicionVenta: d.condicionVenta, stockMinimo: d.stockMinimo, porcentajeUtilidad: d.porcentajeUtilidad,
 });
@@ -151,6 +167,7 @@ const datosProducto = (d: EntradaProducto) => ({
 /** El producto nace con stock 0: las unidades entran por Compras, con lote y vencimiento, para que el kardex cuadre. */
 export async function crearProducto(db: Db, user: Sesion, d: EntradaProducto) {
   await validarCodigosLibres(db, codigosDe(d));
+  await avisarDuplicado(db, d);
   return db.transaction(async (tx) => {
     const [p] = await tx.insert(producto).values({ ...datosProducto(d), costoPromedio: r4(d.costoUnitario) }).returning({ id: producto.id });
     await tx.insert(presentacion).values(presentacionesDe(d).map((x) => ({ ...x, productoId: p.id })));
@@ -164,6 +181,7 @@ export async function editarProducto(db: Db, user: Sesion, id: number, d: Entrad
   const [p] = await db.select().from(producto).where(eq(producto.id, id));
   if (!p) throw new ErrorNegocio("NO_EXISTE", "El producto no existe.", 404);
   await validarCodigosLibres(db, codigosDe(d), id);
+  await avisarDuplicado(db, d, id);
   // Con movimientos, el costo lo calculan las compras (promedio ponderado) y no se edita a mano.
   const costoPromedio = (await tieneMovimientos(db, id)) ? p.costoPromedio : r4(d.costoUnitario);
   const nuevas = presentacionesDe(d);

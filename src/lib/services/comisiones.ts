@@ -3,7 +3,7 @@ import { schema, type Db } from "@/db";
 import type { Sesion } from "../auth";
 import { ErrorNegocio, hoy as hoyLima, mesDe, r2 } from "../util";
 
-const { comision, comisionDiaria, liquidacionMensual, usuario, auditoria } = schema;
+const { comision, comisionDiaria, liquidacionMensual, usuario, venta, ventaDetalle, producto, presentacion, lote, auditoria } = schema;
 
 export async function misComisiones(db: Db, usuarioId: number) {
   const hoy = hoyLima();
@@ -63,11 +63,11 @@ export async function resumenMes(db: Db, mes: string) {
   const fin = finDeMes(mes);
   await consolidarHasta(db, fin < hoy ? fin : hoy);
   const rows = await db.select({
-    usuarioId: comisionDiaria.usuarioId, nombre: usuario.nombre, rol: usuario.rol,
+    usuarioId: comisionDiaria.usuarioId, nombre: usuario.nombre,
     total: sql<number>`coalesce(sum(${comisionDiaria.total}),0)`.mapWith(Number), lineas: sql<number>`coalesce(sum(${comisionDiaria.lineas}),0)`.mapWith(Number),
     dias: sql<number>`count(*)`.mapWith(Number),
   }).from(comisionDiaria).innerJoin(usuario, eq(usuario.id, comisionDiaria.usuarioId))
-    .where(sql`to_char(${comisionDiaria.fecha}, 'YYYY-MM') = ${mes}`).groupBy(comisionDiaria.usuarioId, usuario.nombre, usuario.rol);
+    .where(sql`to_char(${comisionDiaria.fecha}, 'YYYY-MM') = ${mes}`).groupBy(comisionDiaria.usuarioId, usuario.nombre);
   const liqs = await db.select().from(liquidacionMensual).where(eq(liquidacionMensual.mes, mes));
   const pendientes = await db.select({ usuarioId: comision.usuarioId, t: sql<number>`coalesce(sum(${comision.monto}),0)`.mapWith(Number) })
     .from(comision).where(and(eq(comision.estado, "DEVENGADA"), sql`to_char(${comision.fecha}, 'YYYY-MM') = ${mes}`)).groupBy(comision.usuarioId);
@@ -78,6 +78,24 @@ export async function resumenMes(db: Db, mes: string) {
       return { ...r, total: r2(r.total + (pendientes.find((p) => p.usuarioId === r.usuarioId)?.t ?? 0)), liquidacion: l ? { id: l.id, estado: l.estado, total: l.total, pagadoEn: l.pagadoEn } : null };
     }),
   };
+}
+
+/** Lo vendido con comisión por un vendedor en el mes; sin las revertidas, para que cuadre con su acumulado. */
+export async function detalleVendedor(db: Db, usuarioId: number, mes: string) {
+  const [u] = await db.select({ nombre: usuario.nombre }).from(usuario).where(eq(usuario.id, usuarioId));
+  if (!u) throw new ErrorNegocio("NO_EXISTE", "El vendedor no existe.", 404);
+  const lineas = await db.select({
+    id: comision.id, fecha: comision.fecha, origen: comision.origen, porcentaje: comision.porcentaje, base: comision.base, monto: comision.monto,
+    tipoComprobante: venta.tipoComprobante, serie: venta.serie, numero: venta.numero,
+    producto: producto.nombre, presentacion: presentacion.nombre, lote: lote.numero, cantidad: ventaDetalle.cantidad, vendido: ventaDetalle.subtotal,
+  }).from(comision).innerJoin(venta, eq(venta.id, comision.ventaId))
+    .leftJoin(ventaDetalle, eq(ventaDetalle.id, comision.ventaDetalleId))
+    .leftJoin(producto, eq(producto.id, ventaDetalle.productoId))
+    .leftJoin(presentacion, eq(presentacion.id, ventaDetalle.presentacionId))
+    .leftJoin(lote, eq(lote.id, ventaDetalle.loteId))
+    .where(and(eq(comision.usuarioId, usuarioId), sql`to_char(${comision.fecha}, 'YYYY-MM') = ${mes}`, ne(comision.estado, "REVERTIDA")))
+    .orderBy(asc(comision.fecha), asc(comision.id));
+  return { vendedor: u.nombre, mes, total: r2(lineas.reduce((s, l) => s + l.monto, 0)), vendido: r2(lineas.reduce((s, l) => s + (l.vendido ?? 0), 0)), lineas };
 }
 
 /** Cierre de mes: el administrador aprueba el acumulado de cada vendedor (pago mensual). */

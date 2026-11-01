@@ -1,5 +1,6 @@
+import { sql } from "drizzle-orm";
 import {
-  pgTable, pgEnum, serial, integer, text, boolean, numeric, timestamp, date, jsonb, uniqueIndex, index,
+  pgTable, pgEnum, serial, integer, text, boolean, numeric, timestamp, date, jsonb, uniqueIndex, index, check,
 } from "drizzle-orm/pg-core";
 
 const money = (n: string) => numeric(n, { precision: 12, scale: 2, mode: "number" });
@@ -16,14 +17,21 @@ export const usuario = pgTable("usuario", {
   nombre: text("nombre").notNull(),
   login: text("login").notNull().unique(),
   passwordHash: text("password_hash").notNull(),
-  rol: rolEnum("rol").notNull(),
+  roles: rolEnum("roles").array().notNull(),
   activo: boolean("activo").notNull().default(true),
   creadoEn: ts("creado_en").notNull().defaultNow(),
-});
+}, (t) => [check("usuario_con_perfil", sql`cardinality(${t.roles}) > 0`)]);
 
 export const categoria = pgTable("categoria", {
   id: serial("id").primaryKey(),
   nombre: text("nombre").notNull().unique(),
+});
+
+export const laboratorio = pgTable("laboratorio", {
+  id: serial("id").primaryKey(),
+  nombre: text("nombre").notNull(),
+  // Nombre normalizado (ver claveLaboratorio): dos formas de escribir el mismo laboratorio chocan aquí.
+  clave: text("clave").notNull().unique(),
 });
 
 export const producto = pgTable("producto", {
@@ -35,7 +43,7 @@ export const producto = pgTable("producto", {
   formaFarmaceutica: text("forma_farmaceutica"),
   registroSanitario: text("registro_sanitario"),
   registroVence: date("registro_vence", { mode: "string" }),
-  laboratorio: text("laboratorio"),
+  laboratorioId: integer("laboratorio_id").references(() => laboratorio.id),
   categoriaId: integer("categoria_id").references(() => categoria.id),
   condicionVenta: condicionEnum("condicion_venta").notNull().default("LIBRE"),
   stockMinimo: integer("stock_minimo").notNull().default(0),
@@ -177,7 +185,7 @@ export const compra = pgTable("compra", {
   registradoEn: ts("registrado_en").notNull().defaultNow(),
   costeadoEn: ts("costeado_en"),
   total: money("total"),
-}, (t) => [uniqueIndex("compra_doc_uq").on(t.proveedorId, t.tipoComprobante, t.serie, t.numero)]);
+}, (t) => [uniqueIndex("compra_doc_uq").on(t.proveedorId, t.tipoComprobante, t.serie, t.numero).where(sql`${t.estado} <> 'ANULADA'`)]);
 
 export const compraDetalle = pgTable("compra_detalle", {
   id: serial("id").primaryKey(),
@@ -231,7 +239,7 @@ export const kardex = pgTable("kardex", {
   fecha: ts("fecha").notNull().defaultNow(),
   productoId: integer("producto_id").notNull().references(() => producto.id),
   loteId: integer("lote_id").references(() => lote.id),
-  tipo: text("tipo").notNull(), // VENTA | ANULACION_VENTA | COMPRA | SALIDA | ENTRADA | INVENTARIO_INICIAL
+  tipo: text("tipo").notNull(), // VENTA | ANULACION_VENTA | COMPRA | SALIDA | ENTRADA | INVENTARIO_INICIAL | CORRECCION_COSTO | ANULACION_COMPRA
   motivo: text("motivo"),
   documentoTipo: text("documento_tipo").notNull(),
   documentoId: integer("documento_id"),

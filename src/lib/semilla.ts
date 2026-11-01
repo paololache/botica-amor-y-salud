@@ -8,7 +8,7 @@
 import bcrypt from "bcryptjs";
 import { sql } from "drizzle-orm";
 import { schema, type Db } from "@/db";
-import { hoy as hoyLima, sumarDias, r2, r4 } from "./util";
+import { claveLaboratorio, hoy as hoyLima, sumarDias, r2, r4 } from "./util";
 import { evaluarAlertas } from "./services/alertas";
 
 const N_SINT = Number(process.env.SEED_PRODUCTOS ?? 300);
@@ -71,7 +71,7 @@ export async function sembrar(db: Db, opciones: { reset?: boolean } = {}): Promi
   const [{ n }] = await db.select({ n: sql<number>`count(*)`.mapWith(Number) }).from(schema.usuario);
   if (n > 0) {
     if (!opciones.reset) return "La base ya tiene datos. Usa SEED_RESET=1 para reiniciarla.";
-    await db.execute(sql`truncate table auditoria, reporte_guardado, metrica, parametro, alerta, liquidacion_mensual, comision_diaria, comision, complemento, campana, kardex, mov_detalle, movimiento_inventario, motivo, compra_detalle, compra, proveedor, venta_pago, venta_detalle, venta, correlativo, cliente, movimiento_caja, sesion_caja, caja, lote, presentacion, producto, categoria, usuario restart identity cascade`);
+    await db.execute(sql`truncate table auditoria, reporte_guardado, metrica, parametro, alerta, liquidacion_mensual, comision_diaria, comision, complemento, campana, kardex, mov_detalle, movimiento_inventario, motivo, compra_detalle, compra, proveedor, venta_pago, venta_detalle, venta, correlativo, cliente, movimiento_caja, sesion_caja, caja, lote, presentacion, producto, laboratorio, categoria, usuario restart identity cascade`);
   }
   const t0 = Date.now();
   const hoy = hoyLima();
@@ -79,18 +79,20 @@ export async function sembrar(db: Db, opciones: { reset?: boolean } = {}): Promi
   const hash = await bcrypt.hash(PASSWORD, 10);
 
   const usuarios = await db.insert(schema.usuario).values([
-    { nombre: "Rosa Huamán", login: "admin", passwordHash: hash, rol: "ADMIN" },
-    { nombre: "Q.F. Lucía Paredes", login: "qf", passwordHash: hash, rol: "QF" },
-    { nombre: "Miguel Rojas", login: "caja1", passwordHash: hash, rol: "CAJERO" },
-    { nombre: "Carla Mendoza", login: "caja2", passwordHash: hash, rol: "CAJERO" },
-    { nombre: "Jorge Salas", login: "caja3", passwordHash: hash, rol: "CAJERO" },
-    { nombre: "Ana Torres", login: "caja4", passwordHash: hash, rol: "VENDEDOR" },
-    { nombre: "Pedro Ccori", login: "almacen", passwordHash: hash, rol: "INVENTARIADOR" },
-    { nombre: "Luis Vega", login: "contador", passwordHash: hash, rol: "CONTADOR" },
+    { nombre: "Rosa Huamán", login: "admin", passwordHash: hash, roles: ["ADMIN"] },
+    { nombre: "Q.F. Lucía Paredes", login: "qf", passwordHash: hash, roles: ["QF"] },
+    { nombre: "Miguel Rojas", login: "caja1", passwordHash: hash, roles: ["CAJERO"] },
+    { nombre: "Carla Mendoza", login: "caja2", passwordHash: hash, roles: ["CAJERO"] },
+    { nombre: "Jorge Salas", login: "caja3", passwordHash: hash, roles: ["CAJERO"] },
+    { nombre: "Ana Torres", login: "caja4", passwordHash: hash, roles: ["VENDEDOR"] },
+    { nombre: "Pedro Ccori", login: "almacen", passwordHash: hash, roles: ["INVENTARIADOR"] },
+    { nombre: "Luis Vega", login: "contador", passwordHash: hash, roles: ["CONTADOR"] },
   ]).returning();
   const U = Object.fromEntries(usuarios.map((u) => [u.login, u]));
   const vendedores = [U.caja1, U.caja2, U.caja3, U.caja4];
   const cats = await db.insert(schema.categoria).values(CATEGORIAS.map((nombre) => ({ nombre }))).returning();
+  const labs = await db.insert(schema.laboratorio).values(LABS.map((nombre) => ({ nombre, clave: claveLaboratorio(nombre) }))).returning();
+  const labId = new Map(labs.map((l) => [l.nombre, l.id]));
   const cajas = await db.insert(schema.caja).values(Array.from({ length: Number(process.env.SEED_CAJAS ?? 2) }, (_, i) => ({ nombre: `CAJA ${String(i + 1).padStart(2, "0")}` }))).returning();
 
   // ---------- Productos ----------
@@ -106,7 +108,7 @@ export async function sembrar(db: Db, opciones: { reset?: boolean } = {}): Promi
   for (let i = 0; i < defs.length; i += 500) {
     const chunk = defs.slice(i, i + 500);
     const rows = await db.insert(schema.producto).values(chunk.map((d) => ({
-      codigo: d.codigo, nombre: d.nombre, principioActivo: d.pa ?? null, concentracion: d.conc ?? null, laboratorio: d.lab, categoriaId: cats[d.cat].id,
+      codigo: d.codigo, nombre: d.nombre, principioActivo: d.pa ?? null, concentracion: d.conc ?? null, laboratorioId: labId.get(d.lab), categoriaId: cats[d.cat].id,
       condicionVenta: (d.cond ?? "LIBRE") as "LIBRE" | "RECETA" | "RECETA_RETENIDA", stockMinimo: d.tipo === "TAB" ? 50 : 3, porcentajeUtilidad: d.util, ubicacion: `A${ent(1, 8)}-F${ent(1, 5)}`,
     }))).returning({ id: schema.producto.id });
     const presVals: (typeof schema.presentacion.$inferInsert)[] = [];

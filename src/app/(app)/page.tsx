@@ -6,12 +6,13 @@ import { api, useDatos, soles, numero, fechaHora } from "@/lib/cliente";
 import { Blister, type Conteo } from "@/components/blister";
 import { Boton, Cargando, Insignia, Modal, Entrada, Tarjeta, Vacio, useAviso } from "@/components/ui";
 import { useUsuario } from "@/components/shell";
+import { tieneRol } from "@/lib/permisos";
 
 type Alerta = { id: number; tipo: string; severidad: string; titulo: string; detalle: string; referenciaTipo: string | null; referenciaId: number | null; creadaEn: string };
 type Panel = {
   hoy: string;
   ventas: { dia: { total: number; tickets: number }; mes: { total: number; tickets: number }; ayer: number; propias: boolean };
-  alertas: { conteos: Conteo[]; alertas: Alerta[] };
+  alertas: { conteos: Conteo[] };
   caja: { sesion: { id: number; caja: string; turno: string; abiertaEn: string; estado: string } | null; resumen: { tickets: number } | null } | null;
   comisiones: { hoy: number; mes: number; lineasHoy: number } | null;
   tarjetas: { codigo: string; nombre: string; unidad: string; valor: number | null }[];
@@ -44,13 +45,20 @@ export default function PanelPrincipal() {
   const [posponer, setPosponer] = useState<Alerta | null>(null);
   const [todas, setTodas] = useState(false);
   const [motivo, setMotivo] = useState("");
-  const alertas = useMemo(() => (datos?.alertas.alertas ?? []).filter((a) => !tipo || a.tipo === tipo), [datos, tipo]);
+  const conteos = datos?.alertas.conteos ?? [];
+  // Si se atendió la última alerta del tipo, su tarjeta queda deshabilitada: se vuelve a ver todo.
+  const tipoActivo = conteos.some((c) => c.tipo === tipo && c.total > 0) ? tipo : null;
+  const total = conteos.filter((c) => !tipoActivo || c.tipo === tipoActivo).reduce((s, c) => s + c.total, 0);
+  // La lista se pide después del panel, que es quien recalcula las alertas.
+  const lista = useDatos<{ alertas: Alerta[] }>(datos ? `/api/alertas${tipoActivo ? `?tipo=${tipoActivo}` : ""}` : null);
+  const alertas = useMemo(() => (lista.datos?.alertas ?? []).filter((a) => !tipoActivo || a.tipo === tipoActivo), [lista.datos, tipoActivo]);
 
   const atender = async (a: Alerta, accion: string, comentario?: string) => {
     try {
       const r = await api<{ documento: { id: number } | null }>(`/api/alertas/${a.id}/atender`, { cuerpo: { accion, comentario } });
       avisar("ok", r.documento ? `Borrador MOV-${String(r.documento.id).padStart(5, "0")} enviado a aprobación.` : accion === "POSPONER" ? "Alerta pospuesta 24 horas." : "Alerta atendida.");
-      recargar();
+      await recargar();
+      await lista.recargar();
     } catch (e) { avisar("error", (e as Error).message); }
   };
 
@@ -64,7 +72,7 @@ export default function PanelPrincipal() {
           <p className="text-ink-3 text-sm first-letter:uppercase">{new Intl.DateTimeFormat("es-PE", { timeZone: "America/Lima", weekday: "long", day: "numeric", month: "long" }).format(new Date())}</p>
           <h1 className="font-display font-semibold text-[28px] md:text-[34px] leading-tight mt-1">{saludo()}, {nombre}</h1>
         </div>
-        {["ADMIN", "CAJERO", "VENDEDOR", "QF"].includes(u.rol) ? (
+        {tieneRol(u.roles, "ADMIN", "CAJERO", "VENDEDOR", "QF") ? (
           <Link href="/vender"><Boton variante="amor" tam="lg">Ir a vender <ArrowRight size={18} /></Boton></Link>
         ) : null}
       </div>
@@ -76,17 +84,18 @@ export default function PanelPrincipal() {
             <section aria-labelledby="t-alertas">
               <div className="flex items-baseline justify-between mb-3">
                 <h2 id="t-alertas" className="font-display font-semibold text-[17px]">Lo que necesita atención</h2>
-                <span className="text-[12.5px] text-ink-3">Se recalcula con cada movimiento</span>
+                <span className="text-[12.5px] text-ink-3">Se actualiza al abrir el panel</span>
               </div>
-              <Blister conteos={datos.alertas.conteos} seleccion={tipo} alElegir={setTipo} />
+              <Blister conteos={conteos} seleccion={tipoActivo} alElegir={(t) => { setTipo(t); setTodas(false); }} />
             </section>
           ) : cargando ? <Cargando alto="h-72" /> : null}
 
           {datos?.alertas.conteos.length ? (
-            <Tarjeta titulo={tipo ? datos.alertas.conteos.find((c) => c.tipo === tipo)?.nombre : "Todas las alertas"} accion={<span className="text-[12.5px] text-ink-3">{alertas.length} {alertas.length === 1 ? "alerta" : "alertas"}</span>}>
+            <Tarjeta titulo={tipoActivo ? conteos.find((c) => c.tipo === tipoActivo)?.nombre : "Todas las alertas"} accion={<span className="text-[12.5px] text-ink-3">{total} {total === 1 ? "alerta" : "alertas"}</span>}>
+              {lista.error ? <p className="px-5 pb-5 text-sm text-rojo">{lista.error}</p> : null}
               {alertas.length ? (
                 <ul className="divide-y divide-foil">
-                  {alertas.slice(0, todas ? 40 : 8).map((a) => (
+                  {(todas ? alertas : alertas.slice(0, 8)).map((a) => (
                     <li key={a.id} className="aparecer flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3">
                       <span className={`size-2.5 rounded-full shrink-0 ${a.severidad === "CRITICA" ? "bg-rojo" : a.severidad === "ALTA" ? "bg-ambar" : "bg-[#5a9bc0]"}`} aria-label={a.severidad} />
                       <div className="min-w-0 flex-1">
@@ -104,9 +113,12 @@ export default function PanelPrincipal() {
                 </ul>
               ) : null}
               {alertas.length > 8 ? (
-                <div className="px-5 py-3 border-t border-foil"><Boton tam="sm" variante="fantasma" onClick={() => setTodas(!todas)}>{todas ? "Ver menos" : `Ver ${Math.min(alertas.length, 40) - 8} más`}</Boton></div>
+                <div className="px-5 py-3 border-t border-foil flex flex-wrap items-center justify-between gap-2">
+                  <Boton tam="sm" variante="fantasma" onClick={() => setTodas(!todas)}>{todas ? "Ver menos" : `Ver ${alertas.length - 8} más`}</Boton>
+                  {todas && total > alertas.length ? <span className="text-[12.5px] text-ink-3">Se muestran las {alertas.length} más urgentes de {total}</span> : null}
+                </div>
               ) : null}
-              {alertas.length ? null : <Vacio titulo="Nada pendiente aquí">Cuando aparezca algo urgente lo verás en el resumen de arriba.</Vacio>}
+              {alertas.length ? null : lista.error ? null : total > 0 ? <div className="px-5 pb-5"><Cargando /></div> : <Vacio titulo="Nada pendiente aquí">Cuando aparezca algo urgente lo verás en el resumen de arriba.</Vacio>}
             </Tarjeta>
           ) : null}
         </div>

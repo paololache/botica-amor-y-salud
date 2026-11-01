@@ -15,6 +15,41 @@
       "when": 1793388609857,
       "tag": "0001_sour_toro",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793459316090,
+      "tag": "0002_catalogo_laboratorios",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1793459427319,
+      "tag": "0003_quita_laboratorio_texto",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1793565152215,
+      "tag": "0004_compra_anulada_libera_comprobante",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793567016975,
+      "tag": "0005_usuario_varios_perfiles",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1793567017885,
+      "tag": "0006_quita_rol_unico",
+      "breakpoints": true
     }
   ]
 }

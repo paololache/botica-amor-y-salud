@@ -6,14 +6,15 @@ import { api, useDatos, soles, vence, fechaCorta, hoyLima } from "@/lib/cliente"
 import { Boton, Cargando, Encabezado, Entrada, Insignia, Interruptor, Modal, Pestanas, Sello, Selector, Tarjeta, Vacio, useAviso } from "@/components/ui";
 import { FormProducto, type ProductoEditable } from "@/components/form-producto";
 import { useUsuario } from "@/components/shell";
+import { tieneRol } from "@/lib/permisos";
 
 type P = {
   id: number; codigo: string; nombre: string; principioActivo: string | null; concentracion: string | null; formaFarmaceutica: string | null; registroSanitario: string | null; registroVence: string | null;
-  laboratorio: string | null; categoria: string | null; condicionVenta: string; ubicacion: string | null;
+  laboratorioId: number | null; laboratorio: string | null; categoria: string | null; condicionVenta: string; ubicacion: string | null;
   stock: number; stockVigente: number; stockMinimo: number; proximoVencimiento: string | null; costoPromedio?: number; porcentajeUtilidad?: number;
   enPromocion: boolean; campana: { id: number; porcentaje: number; estado: string; inicio: string; fin: string; nombre: string } | null; presentaciones: { id: number; nombre: string; factor: number; pvp: number; codigo: string | null }[];
 };
-type Lista = { productos: P[]; total: number; pagina: number; categorias: { id: number; nombre: string }[] };
+type Lista = { productos: P[]; total: number; pagina: number; categorias: { id: number; nombre: string }[]; laboratorios: { id: number; nombre: string }[] };
 type Ficha = P & { categoriaId: number | null; tieneKardex: boolean; lotes: { id: number; numero: string; vencimiento: string; cantidad: number; estado: string; costoUnitario?: number }[] };
 
 const ICONO = "size-8 grid place-items-center rounded-lg border border-foil-3 text-ink-2 hover:border-vino-2 hover:text-vino";
@@ -40,7 +41,7 @@ export default function Productos() {
   const { datos, recargar, setDatos } = useDatos<Lista>(`/api/productos?q=${encodeURIComponent(qq)}&categoria=${cat}&filtro=${filtro === "todos" ? "" : filtro}&pagina=${pagina}`);
   const [ficha, setFicha] = useState<Ficha | null>(null);
   const [form, setForm] = useState<{ producto: ProductoEditable | null } | null>(null);
-  const puedeKardex = ["ADMIN", "QF", "INVENTARIADOR", "CONTADOR"].includes(u.rol);
+  const puedeKardex = tieneRol(u.roles, "ADMIN", "QF", "INVENTARIADOR", "CONTADOR");
   const verFicha = async (id: number) => { try { setFicha(await api<Ficha>(`/api/productos/${id}`)); } catch (e) { avisar("error", (e as Error).message); } };
   const editar = async (id: number) => { try { setForm({ producto: await api<Ficha>(`/api/productos/${id}`) }); } catch (e) { avisar("error", (e as Error).message); } };
   const pvpDe = (p: P, factor: (f: number) => boolean) => p.presentaciones.find((x) => factor(x.factor));
@@ -56,8 +57,8 @@ export default function Productos() {
   return (
     <div>
       <Encabezado titulo="Productos y stock" bajada={u.verCostos ? "Stock vigente por producto. El interruptor activa o pausa la campaña de promoción." : "Stock vigente y precios de venta."}>
-        {u.rol === "ADMIN" ? <Link href="/campanas"><Boton variante="borde">Nueva campaña</Boton></Link> : null}
-        {u.rol === "ADMIN" ? <Boton variante="amor" onClick={() => setForm({ producto: null })}><Plus size={16} /> Agregar producto</Boton> : null}
+        {u.roles.includes("ADMIN") ? <Link href="/campanas"><Boton variante="borde">Nueva campaña</Boton></Link> : null}
+        {u.roles.includes("ADMIN") ? <Boton variante="amor" onClick={() => setForm({ producto: null })}><Plus size={16} /> Agregar producto</Boton> : null}
       </Encabezado>
       <div className="flex flex-wrap items-center gap-3 mb-4">
         <div className="relative flex-1 min-w-[240px] max-w-md">
@@ -99,7 +100,7 @@ export default function Productos() {
                       <td className={`num font-semibold ${bajo ? "text-rojo" : ""}`}>{p.stockVigente}{empaques ? <span className="block text-[11.5px] font-normal text-ink-2 whitespace-nowrap">{empaques}</span> : null}<span className="block text-[11.5px] font-normal text-ink-3">mín. {p.stockMinimo}</span>{noVendibles > 0 ? <span className="block text-[11.5px] font-semibold text-rojo whitespace-nowrap">{noVendibles} no vendibles</span> : null}</td>
                       <td>{p.proximoVencimiento ? <Sello vence={vence(p.proximoVencimiento)} /> : <span className="text-ink-3">—</span>}</td>
                       <td>
-                        {u.rol === "ADMIN" ? (
+                        {u.roles.includes("ADMIN") ? (
                           p.campana ? (
                             <div className="flex items-center gap-2.5">
                               <Interruptor activo={p.campana.estado === "ACTIVA"} alCambiar={() => alternar(p)} etiqueta={`Campaña de ${p.nombre}`} />
@@ -112,7 +113,7 @@ export default function Productos() {
                         <div className="flex justify-end gap-1">
                           <button className={ICONO} onClick={() => verFicha(p.id)} title="Ver lotes y detalle" aria-label={`Ver ${p.nombre}`}><Eye size={16} /></button>
                           {puedeKardex ? <Link className={ICONO} href={`/kardex?productoId=${p.id}`} title="Ver kardex" aria-label={`Kardex de ${p.nombre}`}><BookOpenText size={16} /></Link> : null}
-                          {u.rol === "ADMIN" ? <button className={ICONO} onClick={() => editar(p.id)} title="Editar producto" aria-label={`Editar ${p.nombre}`}><Pencil size={16} /></button> : null}
+                          {u.roles.includes("ADMIN") ? <button className={ICONO} onClick={() => editar(p.id)} title="Editar producto" aria-label={`Editar ${p.nombre}`}><Pencil size={16} /></button> : null}
                         </div>
                       </td>
                     </tr>
@@ -146,7 +147,7 @@ export default function Productos() {
           </div>
         ) : null}
       </Modal>
-      {form ? <FormProducto producto={form.producto} categorias={datos?.categorias ?? []} alCerrar={() => setForm(null)} alGuardar={() => { setForm(null); recargar(); }} /> : null}
+      {form ? <FormProducto producto={form.producto} categorias={datos?.categorias ?? []} laboratorios={datos?.laboratorios ?? []} alCerrar={() => setForm(null)} alGuardar={() => { setForm(null); recargar(); }} /> : null}
     </div>
   );
 }
