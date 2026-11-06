@@ -148,10 +148,7 @@ function Especial({ id, datos, verCostos }: { id: string; datos: Esp; verCostos:
     <div className="overflow-x-auto"><table className="tabla"><thead><tr><th>Producto</th><th>Lote</th><th className="num">Días</th><th className="num">Unidades</th>{verCostos ? <th className="num">Costo</th> : null}<th>Acción sugerida</th></tr></thead>
       <tbody>{datos.filas.map((f, i) => { const d = f.dias as number; return <tr key={i}><td className="font-semibold">{f.producto as string}</td><td><Sello lote={f.lote as string} vence={vence(f.vencimiento as string)} sev={d <= 30 ? "CRITICA" : d <= 60 ? "ALTA" : undefined} /></td><td className={`num font-semibold ${d <= 30 ? "text-rojo" : ""}`}>{d <= 0 ? "Vencido" : d}</td><td className="num">{f.unidades as number}</td>{verCostos ? <td className="num">{soles(f.costoTotal as number)}</td> : null}<td>{f.accion as string}</td></tr>; })}</tbody></table></div>
   );
-  if (id === "stock-critico") return (
-    <div className="overflow-x-auto"><table className="tabla"><thead><tr><th>Producto</th><th className="num">Stock</th><th className="num">Mínimo</th><th className="num">Venta/día</th><th className="num">Alcanza</th><th className="num">Pedido sugerido</th></tr></thead>
-      <tbody>{datos.filas.map((f, i) => <tr key={i}><td className="font-semibold">{f.producto as string}</td><td className={`num ${(f.stock as number) === 0 ? "text-rojo font-semibold" : ""}`}>{f.stock as number}</td><td className="num">{f.minimo as number}</td><td className="num">{f.ventaDiaria as number}</td><td className="num">{f.cobertura === null ? "—" : `${f.cobertura} días`}</td><td className="num font-semibold">{f.sugerido as number} und.</td></tr>)}</tbody></table></div>
-  );
+  if (id === "stock-critico") return <StockCritico filas={datos.filas} />;
   if (id === "salidas-motivo") return (
     <table className="tabla"><thead><tr><th>Motivo</th><th className="num">Movimientos</th><th className="num">Unidades</th>{verCostos ? <th className="num">Pérdida a costo</th> : null}</tr></thead>
       <tbody>{datos.filas.map((f, i) => <tr key={i}><td className="font-semibold">{f.motivo as string}</td><td className="num">{f.movimientos as number}</td><td className="num">{f.unidades as number}</td>{verCostos ? <td className="num">{soles(f.costoTotal as number)}</td> : null}</tr>)}</tbody></table>
@@ -159,6 +156,21 @@ function Especial({ id, datos, verCostos }: { id: string; datos: Esp; verCostos:
   return (
     <div className="overflow-x-auto"><table className="tabla"><thead><tr><th>Sesión</th><th>Caja</th><th>Cajero</th><th>Turno</th><th>Cierre</th><th className="num">Diferencia</th></tr></thead>
       <tbody>{datos.filas.map((f, i) => <tr key={i}><td><a className="sello" href={`/caja/reporte/${f.id}`}>{String(f.id).padStart(6, "0")}</a></td><td>{f.caja as string}</td><td>{f.cajero as string}</td><td className="capitalize">{String(f.turno).toLowerCase()}</td><td>{fechaCorta(f.cerradaEn as string)}</td><td className={`num font-semibold ${Math.abs((f.diferencia as number) ?? 0) > 5 ? "text-rojo" : ""}`}>{soles(f.diferencia as number)}</td></tr>)}</tbody></table></div>
+  );
+}
+
+function StockCritico({ filas }: { filas: Esp["filas"] }) {
+  const [q, setQ] = useState("");
+  const t = q.trim().toLowerCase();
+  const lista = filas.filter((f) => !t || String(f.codigo).toLowerCase().includes(t) || String(f.producto).toLowerCase().includes(t));
+  return (
+    <div>
+      <div className="no-imprimir px-5 pb-3"><Entrada className="max-w-sm" aria-label="Buscar por código o nombre" placeholder="Buscar por código o nombre de producto" value={q} onChange={(e) => setQ(e.target.value)} /></div>
+      {lista.length ? (
+        <div className="overflow-x-auto"><table className="tabla"><thead><tr><th>Código</th><th>Producto</th><th className="num">Stock</th><th className="num">Mínimo</th><th className="num">Venta/día</th><th className="num">Alcanza</th><th className="num">Pedido sugerido</th></tr></thead>
+          <tbody>{lista.map((f, i) => <tr key={i}><td><span className="sello">{f.codigo as string}</span></td><td className="font-semibold">{f.producto as string}</td><td className={`num ${(f.stock as number) === 0 ? "text-rojo font-semibold" : ""}`}>{f.stock as number}</td><td className="num">{f.minimo as number}</td><td className="num">{f.ventaDiaria as number}</td><td className="num">{f.cobertura === null ? "—" : `${f.cobertura} días`}</td><td className="num font-semibold">{f.sugerido as number} und.</td></tr>)}</tbody></table></div>
+      ) : <Vacio titulo="Ningún producto coincide con la búsqueda" />}
+    </div>
   );
 }
 

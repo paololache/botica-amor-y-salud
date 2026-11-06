@@ -10,14 +10,14 @@ import { consolidarHasta, misComisiones, cerrarMes, detalleVendedor, resumenMes 
 import { registrarRecepcion, anularCompra, costearCompra, corregirCostoCompra, datosCorreccion, esquemaCorreccion, esquemaRecepcion, listarCompras } from "@/lib/services/compras";
 import { registrarMovimiento, decidirMovimiento } from "@/lib/services/salidas";
 import { evaluarAlertas, alertasDelRol } from "@/lib/services/alertas";
-import { ejecutarReporte, crearMetrica } from "@/lib/services/reportes";
+import { ejecutarReporte, crearMetrica, reporteEspecial } from "@/lib/services/reportes";
 import { buscarProductos, crearProducto, editarProducto, esquemaProducto, fichaProducto, listarStock } from "@/lib/services/productos";
 import { crearLaboratorio, eliminarLaboratorio, listarLaboratorios, renombrarLaboratorio, unificarLaboratorios } from "@/lib/services/laboratorios";
 import bcrypt from "bcryptjs";
 import { enmascarar, MODULOS, moduloDeRuta, puede, tieneRol, verCostos, type Rol } from "@/lib/permisos";
 import { firmarSesion, leerSesion } from "@/lib/auth";
 import { crearUsuario, editarUsuario, eliminarUsuario, esquemaNuevoUsuario } from "@/lib/services/usuarios";
-import { panel } from "@/lib/services/panel";
+import { esquemaHistorico, historicoVentas, panel } from "@/lib/services/panel";
 import { evaluar, validarFormula } from "@/lib/formula";
 import { claveLaboratorio, hoy, esIdValido, limpiarNumero, precioSugerido, r4, sumarDias } from "@/lib/util";
 import { base, preparar } from "./fixture";
@@ -644,5 +644,54 @@ describe("Eliminar usuarios", () => {
     await expect(eliminarUsuario(db, F.admin, F.admin.id)).rejects.toThrow(/propio/);
     await expect(eliminarUsuario(db, F.admin, 999999)).rejects.toThrow(/no existe/);
     expect(await auditar()).toBe(antes);
+  });
+});
+
+describe("Histórico de ventas del panel", () => {
+  const anio = Number(hoy().slice(0, 4)); const mes = Number(hoy().slice(5, 7)); const dia = Number(hoy().slice(8, 10));
+  it("agrupa por mes, día y hora y cuadra entre niveles", async () => {
+    const a = await historicoVentas(db, F.admin, { anio });
+    expect(a.nivel).toBe("mes");
+    expect(a.barras).toHaveLength(12);
+    const m = await historicoVentas(db, F.admin, { anio, mes });
+    expect(m.nivel).toBe("dia");
+    expect(m.barras).toHaveLength(new Date(Date.UTC(anio, mes, 0)).getUTCDate());
+    const d = await historicoVentas(db, F.admin, { anio, mes, dia });
+    expect(d.nivel).toBe("hora");
+    expect(a.barras[mes - 1].total).toBe(m.total);
+    expect(m.barras[dia - 1].total).toBe(d.total);
+    expect(d.tickets).toBeGreaterThan(0);
+    expect(a.anios).toContain(anio);
+  });
+  it("el vendedor solo ve lo suyo, el propietario todo, y el turno filtra", async () => {
+    const todo = await historicoVentas(db, F.admin, { anio });
+    const c1 = await historicoVentas(db, F.caja1, { anio }); const c2 = await historicoVentas(db, F.caja2, { anio });
+    expect(c1.propias).toBe(true);
+    expect(todo.propias).toBe(false);
+    expect(c1.total + c2.total).toBeCloseTo(todo.total, 2);
+    const [s] = await db.select({ turno: schema.sesionCaja.turno }).from(schema.venta).innerJoin(schema.sesionCaja, eq(schema.sesionCaja.id, schema.venta.sesionId)).where(eq(schema.venta.estado, "EMITIDA")).limit(1);
+    const t = await historicoVentas(db, F.admin, { anio, turno: s.turno as "TARDE" });
+    expect(t.tickets).toBeGreaterThan(0);
+    expect(t.tickets).toBeLessThanOrEqual(todo.tickets);
+    expect((await historicoVentas(db, F.admin, { anio: 2001 })).tickets).toBe(0);
+  });
+  it("no incluye ventas anuladas y rechaza filtros imposibles", async () => {
+    const antes = await historicoVentas(db, F.admin, { anio });
+    const [{ n }] = await db.select({ n: sql<number>`count(*)`.mapWith(Number) }).from(schema.venta).where(eq(schema.venta.estado, "EMITIDA"));
+    expect(antes.tickets).toBe(n);
+    await expect(historicoVentas(db, F.admin, { anio, dia: 1 })).rejects.toThrow(/mes/);
+    await expect(historicoVentas(db, F.admin, { anio: 2026, mes: 2, dia: 31 })).rejects.toThrow(/no existe/);
+    for (const malo of [{ anio: "abc" }, { anio: 1 }, { anio: 2026, mes: 13 }, { anio: 2026, turno: "X" }]) expect(esquemaHistorico.safeParse(malo).success).toBe(false);
+    expect(esquemaHistorico.parse({ anio: "2026", mes: "", dia: "", turno: "" })).toEqual({ anio: 2026 });
+  });
+  it("las alertas de stock llevan el código del producto", async () => {
+    await db.update(schema.producto).set({ stockMinimo: 100000 }).where(eq(schema.producto.id, F.vit.id));
+    await evaluarAlertas(db);
+    const [a] = await db.select().from(schema.alerta).where(eq(schema.alerta.clave, `STOCK:p:${F.vit.id}`));
+    expect(a.detalle).toContain(`Cód. ${F.vit.codigo}`);
+  });
+  it("el reporte de stock crítico devuelve código y nombre", async () => {
+    const r = await reporteEspecial(db, F.admin, "stock-critico", {}) as { filas: { codigo: string; producto: string }[] };
+    expect(r.filas.find((f) => f.codigo === F.vit.codigo)?.producto).toBe(F.vit.nombre);
   });
 });

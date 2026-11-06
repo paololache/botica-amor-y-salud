@@ -1,9 +1,10 @@
 "use client";
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { CircleCheck, Search } from "lucide-react";
+import { CircleCheck } from "lucide-react";
 import { api, useDatos, fechaCorta, hoyLima, sumarDias, vence } from "@/lib/cliente";
 import { Boton, Campo, Cargando, Encabezado, Entrada, EntradaNumero, Insignia, Modal, Pestanas, Selector, Tarjeta, Vacio, useAviso } from "@/components/ui";
+import { BuscadorProducto } from "@/components/buscador-producto";
 
 type Camp = { id: number; nombre: string; productoId: number; producto: string; codigo: string; lote: string | null; porcentaje: number; inicio: string; fin: string; estado: string; diasRestantes: number | null };
 type Verif = { producto: { id: number; codigo: string; nombre: string }; enKardex: boolean; ultimoMovimiento: string | null; stock: number; lotes: { id: number; numero: string; vencimiento: string; cantidad: number }[] };
@@ -13,7 +14,6 @@ function Campanas() {
   const avisar = useAviso();
   const sp = useSearchParams();
   const lista = useDatos<Camp[]>("/api/campanas");
-  const [codigo, setCodigo] = useState(sp.get("codigo") ?? "");
   const [verif, setVerif] = useState<Verif | null>(null);
   const [errVerif, setErrVerif] = useState<string | null>(null);
   const [f, setF] = useState({ loteId: "", nombre: "", porcentaje: "", inicio: hoyLima(), fin: sumarDias(hoyLima(), 30), observacion: "" });
@@ -23,13 +23,15 @@ function Campanas() {
   const [extender, setExtender] = useState<Camp | null>(null);
   const [nuevoFin, setNuevoFin] = useState("");
 
-  const verificar = async (c = codigo) => {
+  const verificar = async (c: string) => {
     setErrVerif(null); setVerif(null);
     if (!c.trim()) return;
     try {
       const v = await api<Verif>(`/api/campanas/verificar?codigo=${encodeURIComponent(c.trim())}`);
       setVerif(v);
-      if (!f.nombre) setF((x) => ({ ...x, nombre: `${v.producto.nombre.split(" ·")[0]} · promoción` }));
+      // Al cambiar de producto, el nombre sugerido cambia con él; uno escrito a mano se respeta.
+      const sugerido = (n: string) => `${n.split(" ·")[0]} · promoción`;
+      setF((x) => (!x.nombre || (verif && x.nombre === sugerido(verif.producto.nombre)) ? { ...x, loteId: "", nombre: sugerido(v.producto.nombre) } : { ...x, loteId: "" }));
     } catch (e) { setErrVerif((e as Error).message); }
   };
   useEffect(() => { if (sp.get("codigo")) verificar(sp.get("codigo")!); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
@@ -39,7 +41,7 @@ function Campanas() {
     try {
       const c = await api<{ estado: string }>("/api/campanas", { cuerpo: { codigo: verif!.producto.codigo, loteId: f.loteId ? Number(f.loteId) : null, nombre: f.nombre, porcentaje: Number(f.porcentaje), inicio: f.inicio, fin: f.fin, observacion: f.observacion || undefined, activarAhora } });
       avisar("ok", c.estado === "ACTIVA" ? `Campaña activa: ${verif!.producto.nombre} comisiona ${f.porcentaje}%.` : `Campaña programada desde el ${fechaCorta(f.inicio)}.`);
-      setVerif(null); setCodigo(""); setF({ loteId: "", nombre: "", porcentaje: "", inicio: hoyLima(), fin: sumarDias(hoyLima(), 30), observacion: "" }); lista.recargar();
+      setVerif(null); setF({ loteId: "", nombre: "", porcentaje: "", inicio: hoyLima(), fin: sumarDias(hoyLima(), 30), observacion: "" }); lista.recargar();
     } catch (e) { setError((e as Error).message); } finally { setOcupado(false); }
   };
 
@@ -58,16 +60,14 @@ function Campanas() {
       <div className="grid xl:grid-cols-[420px_minmax(0,1fr)] gap-6 items-start">
         <Tarjeta titulo="Nueva campaña">
           <div className="px-5 pb-5 space-y-3.5">
-            <Campo etiqueta="Producto (código del kardex)">
-              <div className="flex gap-2">
-                <Entrada value={codigo} onChange={(e) => { setCodigo(e.target.value); setVerif(null); }} onKeyDown={(e) => e.key === "Enter" && verificar()} placeholder="Escanea o escribe el código" />
-                <Boton variante="borde" onClick={() => verificar()} aria-label="Verificar código"><Search size={16} /></Boton>
-              </div>
-            </Campo>
+            <div>
+              <p className="block text-[12.5px] font-semibold text-ink-2 mb-1.5">Producto</p>
+              <BuscadorProducto placeholder="Buscar por nombre del producto" alElegir={(p) => verificar(p.codigo)} />
+            </div>
             {errVerif ? <p className="text-sm text-rojo -mt-1">{errVerif}</p> : null}
             {verif ? (
               <div className={`rounded-2xl p-3.5 text-[13.5px] ${verif.enKardex && verif.stock > 0 ? "bg-ok-claro" : "bg-rojo-claro"}`}>
-                <p className="font-semibold">{verif.producto.nombre}</p>
+                <p className="font-semibold">{verif.producto.nombre} <span className="font-normal text-ink-2">· {verif.producto.codigo}</span></p>
                 {verif.enKardex && verif.stock > 0 ? (
                   <p className="text-ok flex items-center gap-1.5 mt-1"><CircleCheck size={15} /> Registrado en el kardex · stock {verif.stock} · último movimiento {fechaCorta(verif.ultimoMovimiento)}</p>
                 ) : <p className="text-rojo mt-1">{verif.enKardex ? "No tiene stock: no puede entrar en campaña." : "No tiene movimientos en el kardex: regístralo primero con una compra o entrada."}</p>}

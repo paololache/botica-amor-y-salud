@@ -6,7 +6,8 @@ import { api, useDatos, soles, numero, fechaHora } from "@/lib/cliente";
 import { Blister, type Conteo } from "@/components/blister";
 import { Boton, Cargando, Insignia, Modal, Entrada, Tarjeta, Vacio, useAviso } from "@/components/ui";
 import { useUsuario } from "@/components/shell";
-import { tieneRol } from "@/lib/permisos";
+import { HistoricoVentas } from "@/components/historico-ventas";
+import { puede, tieneRol } from "@/lib/permisos";
 
 type Alerta = { id: number; tipo: string; severidad: string; titulo: string; detalle: string; referenciaTipo: string | null; referenciaId: number | null; creadaEn: string };
 type Panel = {
@@ -45,13 +46,16 @@ export default function PanelPrincipal() {
   const [posponer, setPosponer] = useState<Alerta | null>(null);
   const [todas, setTodas] = useState(false);
   const [motivo, setMotivo] = useState("");
+  const [busqueda, setBusqueda] = useState("");
   const conteos = datos?.alertas.conteos ?? [];
   // Si se atendió la última alerta del tipo, su tarjeta queda deshabilitada: se vuelve a ver todo.
   const tipoActivo = conteos.some((c) => c.tipo === tipo && c.total > 0) ? tipo : null;
   const total = conteos.filter((c) => !tipoActivo || c.tipo === tipoActivo).reduce((s, c) => s + c.total, 0);
   // La lista se pide después del panel, que es quien recalcula las alertas.
   const lista = useDatos<{ alertas: Alerta[] }>(datos ? `/api/alertas${tipoActivo ? `?tipo=${tipoActivo}` : ""}` : null);
-  const alertas = useMemo(() => (lista.datos?.alertas ?? []).filter((a) => !tipoActivo || a.tipo === tipoActivo), [lista.datos, tipoActivo]);
+  const esStock = !!tipoActivo && ["AGOTADO", "POR_TERMINARSE", "BAJO_MINIMO"].includes(tipoActivo);
+  const texto = esStock ? busqueda.trim().toLowerCase() : "";
+  const alertas = useMemo(() => (lista.datos?.alertas ?? []).filter((a) => (!tipoActivo || a.tipo === tipoActivo) && (!texto || `${a.titulo} ${a.detalle}`.toLowerCase().includes(texto))), [lista.datos, tipoActivo, texto]);
 
   const atender = async (a: Alerta, accion: string, comentario?: string) => {
     try {
@@ -93,6 +97,7 @@ export default function PanelPrincipal() {
           {datos?.alertas.conteos.length ? (
             <Tarjeta titulo={tipoActivo ? conteos.find((c) => c.tipo === tipoActivo)?.nombre : "Todas las alertas"} accion={<span className="text-[12.5px] text-ink-3">{total} {total === 1 ? "alerta" : "alertas"}</span>}>
               {lista.error ? <p className="px-5 pb-5 text-sm text-rojo">{lista.error}</p> : null}
+              {esStock ? <div className="px-5 pb-3"><Entrada aria-label="Buscar por código o nombre" placeholder="Buscar por código o nombre de producto" value={busqueda} onChange={(e) => { setBusqueda(e.target.value); setTodas(false); }} /></div> : null}
               {alertas.length ? (
                 <ul className="divide-y divide-foil">
                   {(todas ? alertas : alertas.slice(0, 8)).map((a) => (
@@ -118,9 +123,11 @@ export default function PanelPrincipal() {
                   {todas && total > alertas.length ? <span className="text-[12.5px] text-ink-3">Se muestran las {alertas.length} más urgentes de {total}</span> : null}
                 </div>
               ) : null}
-              {alertas.length ? null : lista.error ? null : total > 0 ? <div className="px-5 pb-5"><Cargando /></div> : <Vacio titulo="Nada pendiente aquí">Cuando aparezca algo urgente lo verás en el resumen de arriba.</Vacio>}
+              {alertas.length ? null : lista.error ? null : texto ? <Vacio titulo="Ningún producto coincide con la búsqueda" /> : total > 0 ? <div className="px-5 pb-5"><Cargando /></div> : <Vacio titulo="Nada pendiente aquí">Cuando aparezca algo urgente lo verás en el resumen de arriba.</Vacio>}
             </Tarjeta>
           ) : null}
+
+          {puede(u.roles, "ventas.ver") ? <HistoricoVentas /> : null}
         </div>
 
         <div className="space-y-6">

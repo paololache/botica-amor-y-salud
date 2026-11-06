@@ -156,7 +156,7 @@ export async function reporteEspecial(db: Db, user: Sesion, id: string, q: { des
       const diaria = Number(r.v30) / 30; const stock = Number(r.stock);
       return { producto: r.producto, codigo: r.codigo, stock, minimo: Number(r.minimo), ventaDiaria: Math.round(diaria * 10) / 10, cobertura: diaria > 0 ? Math.floor(stock / diaria) : null, sugerido: Math.max(0, Math.ceil(diaria * 21 - stock)) };
     }).filter((r) => (r.cobertura !== null && r.cobertura <= 7) || (r.minimo > 0 && r.stock <= r.minimo)).sort((a, b) => (a.cobertura ?? 999) - (b.cobertura ?? 999));
-    return { columnas: ["Producto", "Stock", "Mínimo", "Venta/día", "Alcanza (días)", "Pedido sugerido"], filas: out };
+    return { columnas: ["Código", "Producto", "Stock", "Mínimo", "Venta/día", "Alcanza (días)", "Pedido sugerido"], filas: out };
   }
   if (id === "salidas-motivo") {
     const h = q.hasta ?? hoy; const d = q.desde ?? sumarDias(h, -29);

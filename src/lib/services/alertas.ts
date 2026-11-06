@@ -45,8 +45,8 @@ async function calcularAlertas(db: Db) {
 
   await db.update(lote).set({ estado: "VENCIDO" }).where(and(eq(lote.estado, "ACTIVO"), sql`${lote.vencimiento} <= ${hoy}`, sql`${lote.cantidad} > 0`));
 
-  const prods = await filas<{ id: number; nombre: string; minimo: number; stock: string; vigente: string; v30: string; v90: string }>(db, sql`
-    select p.id, p.nombre, p.stock_minimo as minimo,
+  const prods = await filas<{ id: number; codigo: string; nombre: string; minimo: number; stock: string; vigente: string; v30: string; v90: string }>(db, sql`
+    select p.id, p.codigo, p.nombre, p.stock_minimo as minimo,
       coalesce(s.stock, 0) as stock, coalesce(s.vigente, 0) as vigente,
       coalesce(v.v30, 0) as v30, coalesce(v.v90, 0) as v90
     from producto p
@@ -65,9 +65,9 @@ async function calcularAlertas(db: Db) {
     const diaria = Number(r.v30) / 30; const v90 = Number(r.v90);
     const reorden = diaria * (p.dias_reposicion + p.dias_stock_seguridad);
     const cobertura = diaria > 0 ? vigente / diaria : Infinity;
-    if (vigente <= 0 && v90 > 0) nuevas.push({ clave: `STOCK:p:${r.id}`, tipo: "AGOTADO", severidad: "CRITICA", titulo: r.nombre, detalle: "Sin stock vigente y con ventas en los últimos 90 días", referenciaTipo: "producto", referenciaId: r.id, valor: 0 });
-    else if (vigente > 0 && diaria > 0 && (vigente <= reorden || cobertura <= p.cobertura_minima_dias)) nuevas.push({ clave: `STOCK:p:${r.id}`, tipo: "POR_TERMINARSE", severidad: "ALTA", titulo: r.nombre, detalle: `Alcanza para ${Math.max(0, Math.floor(cobertura))} días (vende ${diaria.toFixed(1)} und./día)`, referenciaTipo: "producto", referenciaId: r.id, valor: Math.floor(cobertura) });
-    else if (r.minimo > 0 && vigente <= r.minimo) nuevas.push({ clave: `STOCK:p:${r.id}`, tipo: "BAJO_MINIMO", severidad: "ALTA", titulo: r.nombre, detalle: `Stock ${vigente} con mínimo ${r.minimo}`, referenciaTipo: "producto", referenciaId: r.id, valor: vigente });
+    if (vigente <= 0 && v90 > 0) nuevas.push({ clave: `STOCK:p:${r.id}`, tipo: "AGOTADO", severidad: "CRITICA", titulo: r.nombre, detalle: `Cód. ${r.codigo} · Sin stock vigente y con ventas en los últimos 90 días`, referenciaTipo: "producto", referenciaId: r.id, valor: 0 });
+    else if (vigente > 0 && diaria > 0 && (vigente <= reorden || cobertura <= p.cobertura_minima_dias)) nuevas.push({ clave: `STOCK:p:${r.id}`, tipo: "POR_TERMINARSE", severidad: "ALTA", titulo: r.nombre, detalle: `Cód. ${r.codigo} · Alcanza para ${Math.max(0, Math.floor(cobertura))} días (vende ${diaria.toFixed(1)} und./día)`, referenciaTipo: "producto", referenciaId: r.id, valor: Math.floor(cobertura) });
+    else if (r.minimo > 0 && vigente <= r.minimo) nuevas.push({ clave: `STOCK:p:${r.id}`, tipo: "BAJO_MINIMO", severidad: "ALTA", titulo: r.nombre, detalle: `Cód. ${r.codigo} · Stock ${vigente} con mínimo ${r.minimo}`, referenciaTipo: "producto", referenciaId: r.id, valor: vigente });
     else if (stock > 0 && v90 === 0) nuevas.push({ clave: `ROT:p:${r.id}`, tipo: "SIN_ROTACION", severidad: "INFO", titulo: r.nombre, detalle: `${stock} unidades sin ventas en 90 días`, referenciaTipo: "producto", referenciaId: r.id, valor: stock });
   }
 
