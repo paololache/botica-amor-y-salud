@@ -1,0 +1,1 @@
+ALTER TABLE "campana" ADD COLUMN "precios" jsonb;

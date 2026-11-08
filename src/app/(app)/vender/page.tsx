@@ -1,21 +1,33 @@
 "use client";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Search, Minus, Plus, Trash, Sparkles, Printer, ScanBarcode, FileText, Eye } from "lucide-react";
+import { Search, Minus, Plus, Trash, Sparkles, Printer, FileText, Eye, TrendingUp } from "lucide-react";
 import { api, useDatos, soles, vence } from "@/lib/cliente";
 import { Boton, Entrada, EntradaNumero, Insignia, Modal, Vacio, useAviso } from "@/components/ui";
 import { useUsuario } from "@/components/shell";
+import { BarraMeta } from "@/components/meta-dia";
+import { mensajeMotivacional } from "@/lib/motivacion";
+import type { MetaDia } from "@/lib/services/metas";
 
-type Pres = { id: number; nombre: string; factor: number; pvp: number };
+type Pres = { id: number; nombre: string; factor: number; pvp: number; pvpCampana?: number | null };
+/** Precio que se cobra: el de campaña si la presentación lo tiene, si no el de lista. */
+const precioDe = (p?: Pres) => (p ? p.pvpCampana ?? p.pvp : 0);
 type Prod = {
   id: number; codigo: string; nombre: string; principioActivo: string | null; laboratorio: string | null; condicionVenta: string; ubicacion: string | null;
   stockVigente: number; proximoVencimiento: string | null; enPromocion: boolean; campana: { porcentaje: number } | null; presentaciones: Pres[]; presentacionEscaneadaId?: number; mensaje?: string | null;
 };
-type Item = { prod: Prod; presId: number; cantidad: number; descuentoPct: number; origen: "DIRECTA" | "SUGERENCIA" };
+type Item = { prod: Prod; presId: number; cantidad: number; origen: "DIRECTA" | "SUGERENCIA" };
 type Medio = "EFECTIVO" | "YAPE" | "PLIN" | "TARJETA" | "TRANSFERENCIA";
-type Resultado = { id: number; ref: string; total: number; vuelto: number; cpeEstado: string; comisionVenta: number; comisionHoy: number; comisionMes: number; tipoComprobante: string; subtotal: number; igv: number };
+type Resultado = { id: number; ref: string; total: number; vuelto: number; cpeEstado: string; comisionVenta: number; comisionHoy: number; comisionMes: number; tipoComprobante: string; subtotal: number; igv: number; meta: MetaDia | null };
 
 const MEDIOS: { v: Medio; t: string }[] = [{ v: "EFECTIVO", t: "Efectivo" }, { v: "YAPE", t: "Yape" }, { v: "PLIN", t: "Plin" }, { v: "TARJETA", t: "Tarjeta" }, { v: "TRANSFERENCIA", t: "Transferencia" }];
+
+/** Precio con el de lista tachado cuando hay precio de campaña. */
+function Precio({ p, className = "" }: { p?: Pres; className?: string }) {
+  if (!p) return null;
+  if (p.pvpCampana == null) return <span className={className}>{soles(p.pvp)}</span>;
+  return <span className={className}><s className="font-normal text-ink-3 text-[0.85em] mr-1">{soles(p.pvp)}</s><span className="text-amor-2">{soles(p.pvpCampana)}</span></span>;
+}
 
 function Tecla({ k }: { k: string }) {
   return <kbd className="inline-grid place-items-center min-w-6 h-5 px-1 rounded-md border border-foil-3 bg-papel text-[11px] font-semibold text-ink-2">{k}</kbd>;
@@ -25,6 +37,7 @@ export default function Vender() {
   const u = useUsuario();
   const avisar = useAviso();
   const caja = useDatos<{ sesion: { id: number; caja: string; estado: string } | null }>("/api/caja");
+  const top = useDatos<(Prod & { tickets: number })[]>("/api/productos/mas-vendidos");
   const [q, setQ] = useState("");
   const [resultados, setResultados] = useState<Prod[]>([]);
   const [activo, setActivo] = useState(0);
@@ -35,13 +48,23 @@ export default function Vender() {
   const [conCliente, setConCliente] = useState(false);
   const [cobrando, setCobrando] = useState(false);
   const [pagos, setPagos] = useState<{ medio: Medio; monto: string }[]>([{ medio: "EFECTIVO", monto: "" }]);
-  const [receta, setReceta] = useState({ medico: "", cmp: "", numero: "" });
-  const [autorizacion, setAutorizacion] = useState({ login: "", password: "" });
   const [enviando, setEnviando] = useState(false);
   const [errorCobro, setErrorCobro] = useState<string | null>(null);
   const [resultado, setResultado] = useState<Resultado | null>(null);
   const buscador = useRef<HTMLInputElement>(null);
   const consulta = useRef("");
+  const [mensaje, setMensaje] = useState<string | null>(null);
+  const ultimoMensaje = useRef<string | null>(null);
+
+  // Desde la alerta de campaña se llega con ?q=producto: se deja buscado para agregarlo de un toque.
+  useEffect(() => {
+    const inicial = new URLSearchParams(window.location.search).get("q");
+    if (inicial) { setQ(inicial); window.history.replaceState(null, "", "/vender"); }
+    // El recordatorio de campañas, estando ya en esta pantalla, pide la búsqueda por evento.
+    const alBuscar = (e: Event) => setQ((e as CustomEvent<string>).detail);
+    window.addEventListener("botica:buscar-producto", alBuscar);
+    return () => window.removeEventListener("botica:buscar-producto", alBuscar);
+  }, []);
 
   // Búsqueda con espera corta
   useEffect(() => {
@@ -70,7 +93,7 @@ export default function Vender() {
     setItems((xs) => {
       const i = xs.findIndex((x) => x.prod.id === prod.id && x.presId === pid);
       if (i >= 0) return xs.map((x, k) => (k === i ? { ...x, cantidad: x.cantidad + 1 } : x));
-      return [...xs, { prod, presId: pid, cantidad: 1, descuentoPct: 0, origen }];
+      return [...xs, { prod, presId: pid, cantidad: 1, origen }];
     });
   }, []);
 
@@ -94,20 +117,17 @@ export default function Vender() {
 
   const lineas = useMemo(() => items.map((it) => {
     const p = it.prod.presentaciones.find((x) => x.id === it.presId)!;
-    const bruto = p.pvp * it.cantidad;
-    const desc = Math.round(bruto * it.descuentoPct) / 100;
-    return { ...it, pres: p, subtotal: Math.round((bruto - desc) * 100) / 100, unidades: it.cantidad * p.factor };
+    return { ...it, pres: p, subtotal: Math.round(precioDe(p) * it.cantidad * 100) / 100, unidades: it.cantidad * p.factor };
   }), [items]);
   const total = Math.round(lineas.reduce((s, l) => s + l.subtotal, 0) * 100) / 100;
-  const requiereReceta = lineas.some((l) => l.prod.condicionVenta !== "LIBRE");
-  const requiereAutorizacion = lineas.some((l) => l.descuentoPct > 5) && !u.roles.includes("ADMIN");
+  const esAdmin = u.roles.includes("ADMIN");
   const requiereDoc = tipo === "FACTURA" || (tipo === "BOLETA" && total > 700);
   const pagado = pagos.reduce((s, p) => s + (Number(p.monto) || 0), 0);
   const vuelto = Math.max(0, Math.round((pagado - total) * 100) / 100);
 
   const nueva = useCallback(() => {
     setItems([]); setQ(""); setTipo("BOLETA"); setCliente({ numero: "", nombre: "" }); setConCliente(false); setResultado(null); setCobrando(false);
-    setReceta({ medico: "", cmp: "", numero: "" }); setAutorizacion({ login: "", password: "" }); setErrorCobro(null);
+    setErrorCobro(null);
     setTimeout(() => buscador.current?.focus(), 50);
   }, []);
 
@@ -122,12 +142,12 @@ export default function Vender() {
       const pagosOk = pagos.filter((p) => Number(p.monto) > 0).map((p) => ({ medio: p.medio, monto: Number(p.monto) }));
       if (!pagosOk.length) pagosOk.push({ medio: "EFECTIVO", monto: total });
       const r = await api<Resultado>("/api/ventas", { cuerpo: {
-        items: items.map((i) => ({ presentacionId: i.presId, cantidad: i.cantidad, descuentoPct: i.descuentoPct, origen: i.origen })),
+        items: items.map((i) => ({ presentacionId: i.presId, cantidad: i.cantidad, descuentoPct: 0, origen: i.origen })),
         tipoComprobante: tipo, pagos: pagosOk,
         cliente: requiereDoc || cliente.numero.trim() ? { tipoDoc: cliente.numero.length === 11 ? "RUC" : "DNI", numero: cliente.numero, nombre: cliente.nombre || "Cliente" } : undefined,
-        receta: requiereReceta ? receta : undefined,
-        autorizacion: requiereAutorizacion ? autorizacion : undefined,
       } });
+      const m = mensajeMotivacional(r.meta, u.nombre, r.total, ultimoMensaje.current);
+      ultimoMensaje.current = m; setMensaje(m);
       setResultado(r); setCobrando(false);
       if (r.comisionVenta > 0) avisar("ok", `Ganaste ${soles(r.comisionVenta)} de comisión con esta venta.`);
     } catch (e) {
@@ -154,7 +174,7 @@ export default function Vender() {
     return (
       <div className="max-w-xl mx-auto mt-10 tarjeta">
         <Vacio titulo="Abre tu caja para vender" accion={<Link href="/caja"><Boton variante="amor">Abrir caja</Boton></Link>}>
-          {caja.datos?.sesion?.estado === "EN_CIERRE" ? "Tu cierre espera la validación del administrador." : "Cada venta se registra en tu sesión de caja, así el arqueo cuadra al final del turno."}
+          {caja.datos?.sesion?.estado === "EN_CIERRE" ? "Tu cierre espera la validación del administrador." : "Cada venta se registra en tu sesión de caja, así el cierre de caja cuadra al final del turno."}
         </Vacio>
       </div>
     );
@@ -191,7 +211,7 @@ export default function Vender() {
                 }
                 if (e.key === "Escape") { setQ(""); setResultados([]); }
               }}
-              placeholder="Escanea el código o escribe nombre, principio activo o síntoma"
+              placeholder="Buscar producto por nombre, código o principio activo"
               aria-label="Buscar producto" role="combobox" aria-expanded={resultados.length > 0} aria-controls="resultados"
               className="w-full h-14 pl-12 pr-4 rounded-2xl border-2 border-foil-3 bg-papel text-[16px] focus:border-vino-2 focus:outline-none focus:ring-4 focus:ring-rosado/40" />
             {resultados.length ? (
@@ -203,12 +223,7 @@ export default function Vender() {
                       <div className="min-w-0 flex-1">
                         <div className="font-semibold text-[15px] leading-snug">{r.nombre}</div>
                         <div className="text-[12.5px] text-ink-2 mt-0.5 truncate">{[r.principioActivo, r.laboratorio, r.ubicacion].filter(Boolean).join(" · ") || r.codigo}</div>
-                        {r.condicionVenta !== "LIBRE" || r.enPromocion ? (
-                          <div className="flex flex-wrap gap-1.5 mt-1.5">
-                            {r.condicionVenta !== "LIBRE" ? <Insignia tono="ambar">{r.condicionVenta === "RECETA" ? "Con receta" : "Receta retenida"}</Insignia> : null}
-                            {r.enPromocion ? <Insignia tono="amor">En promoción</Insignia> : null}
-                          </div>
-                        ) : null}
+                        {r.enPromocion ? <div className="flex flex-wrap gap-1.5 mt-1.5"><Insignia tono="amor">En promoción</Insignia></div> : null}
                       </div>
                       <div className="shrink-0 text-right">
                         <div className={`text-[13.5px] font-semibold ${r.stockVigente ? "text-ink" : "text-rojo"}`}>{r.stockVigente ? `${r.stockVigente} und.` : "Sin stock"}</div>
@@ -220,7 +235,7 @@ export default function Vender() {
                         <button key={p.id} disabled={r.stockVigente < p.factor} onClick={() => agregar(r, p.id)}
                           className="h-11 px-3 rounded-xl border border-foil-3 bg-papel hover:border-vino-2 hover:bg-foil/50 flex items-center justify-between gap-2 disabled:opacity-35 disabled:hover:border-foil-3">
                           <span className="text-[12.5px] text-ink-2 truncate">{p.nombre}</span>
-                          <span className="text-[14px] font-semibold tabular-nums">{soles(p.pvp)}</span>
+                          <Precio p={p} className="text-[14px] font-semibold tabular-nums" />
                         </button>
                       ))}
                     </div>
@@ -230,10 +245,33 @@ export default function Vender() {
             ) : null}
           </div>
 
+          {top.datos?.length ? (
+            <section className="tarjeta p-4" aria-labelledby="t-top">
+              <h2 id="t-top" className="flex items-center gap-2 font-display font-semibold text-[14.5px]"><TrendingUp size={16} className="text-amor" /> Más vendidos</h2>
+              <p className="text-[12px] text-ink-3 mt-0.5">Últimos 30 días. Toca uno para agregarlo.</p>
+              <div className="grid grid-cols-2 sm:grid-cols-3 2xl:grid-cols-4 gap-2 mt-3">
+                {top.datos.map((p) => {
+                  const enCarrito = items.filter((x) => x.prod.id === p.id).reduce((s, x) => s + x.cantidad, 0);
+                  return (
+                    <button key={p.id} onClick={() => agregar(p)} title={p.nombre}
+                      className={`relative min-w-0 text-left rounded-xl border px-3 py-2 transition hover:border-vino-2 hover:bg-foil/50 ${enCarrito ? "border-amor/50 bg-amor-claro/40" : "border-foil-3 bg-papel"}`}>
+                      <span className="block font-semibold text-[13px] leading-snug line-clamp-2">{p.nombre}</span>
+                      <span className="flex items-center justify-between gap-2 mt-1 text-[12px]">
+                        <span className="font-semibold tabular-nums"><Precio p={p.presentaciones[0]} /><span className="font-normal text-ink-3"> · {p.presentaciones[0].nombre}</span></span>
+                        <span className="text-ink-3 shrink-0">{p.stockVigente} und.</span>
+                      </span>
+                      {enCarrito ? <span className="absolute -top-2 -right-2 min-w-5 h-5 px-1 grid place-items-center rounded-full bg-amor text-white text-[11px] font-semibold">{enCarrito}</span> : null}
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          ) : null}
+
           <div className="tarjeta overflow-x-auto">
             {lineas.length ? (
               <table className="tabla">
-                <thead><tr><th className="min-w-[200px] w-full">Producto</th><th>Presentación</th><th className="num">Cantidad</th><th className="num">Precio</th><th className="num">Desc. %</th><th className="num">Subtotal</th><th /></tr></thead>
+                <thead><tr><th className="min-w-[200px] w-full">Producto</th><th>Presentación</th><th className="num">Cantidad</th><th className="num">Precio</th><th className="num">Subtotal</th><th /></tr></thead>
                 <tbody>
                   {lineas.map((l, i) => (
                     <tr key={`${l.prod.id}-${l.presId}`} className="aparecer">
@@ -241,8 +279,7 @@ export default function Vender() {
                         <div className="font-semibold">{l.prod.nombre}</div>
                         <div className="flex gap-1.5 mt-1">
                           {l.origen === "SUGERENCIA" ? <Insignia tono="azul">Complemento</Insignia> : null}
-                          {l.prod.enPromocion ? <Insignia tono="amor">Comisiona</Insignia> : null}
-                          {l.prod.condicionVenta !== "LIBRE" ? <Insignia tono="ambar">Receta</Insignia> : null}
+                          {l.prod.enPromocion ? <Insignia tono="amor">{esAdmin ? "Campaña" : "Comisiona"}</Insignia> : null}
                         </div>
                       </td>
                       <td>
@@ -258,8 +295,7 @@ export default function Vender() {
                         </div>
                         {l.unidades > l.prod.stockVigente ? <div className="text-[11.5px] text-rojo mt-1">Solo hay {l.prod.stockVigente} und.</div> : null}
                       </td>
-                      <td className="num">{soles(l.pres.pvp)}</td>
-                      <td className="num"><EntradaNumero crudo value={l.descuentoPct || ""} placeholder="0" inputMode="decimal" aria-label="Descuento" onChange={(e) => setItems((xs) => xs.map((x, k) => (k === i ? { ...x, descuentoPct: Math.min(100, Math.max(0, Number(e.target.value) || 0)) } : x)))} className="w-14 h-8 text-right px-2 rounded-lg border border-foil-3" /></td>
+                      <td className="num whitespace-nowrap"><Precio p={l.pres} /></td>
                       <td className="num font-semibold">{soles(l.subtotal)}</td>
                       <td><button onClick={() => setItems((xs) => xs.filter((_, k) => k !== i))} className="size-8 grid place-items-center rounded-lg text-ink-3 hover:text-rojo hover:bg-rojo-claro" aria-label="Quitar"><Trash size={15} /></button></td>
                     </tr>
@@ -268,8 +304,8 @@ export default function Vender() {
               </table>
             ) : (
               <div className="py-16 text-center">
-                <ScanBarcode size={40} className="mx-auto text-foil-3" />
-                <p className="font-display font-semibold mt-4">Escanea o busca el primer producto</p>
+                <Search size={36} className="mx-auto text-foil-3" />
+                <p className="font-display font-semibold mt-4">Busca o elige el primer producto</p>
                 <p className="text-sm text-ink-2 mt-1">El lote se asigna solo: primero el que vence antes.</p>
               </div>
             )}
@@ -287,7 +323,7 @@ export default function Vender() {
                       <div className="font-semibold text-[13.5px] truncate">{s.nombre}</div>
                       <div className="text-[12px] text-ink-3">{s.mensaje ?? "Sugerido"}{s.enPromocion ? " · en promoción" : ""}</div>
                     </div>
-                    <Boton tam="sm" variante={i === 0 ? "amor" : "borde"} onClick={() => agregar(s, undefined, "SUGERENCIA")}>{i === 0 ? "F7 · " : ""}{soles(s.presentaciones[0]?.pvp)}</Boton>
+                    <Boton tam="sm" variante={i === 0 ? "amor" : "borde"} onClick={() => agregar(s, undefined, "SUGERENCIA")}>{i === 0 ? "F7 · " : ""}{soles(precioDe(s.presentaciones[0]))}</Boton>
                   </li>
                 ))}
               </ul>
@@ -346,21 +382,6 @@ export default function Vender() {
             )) : null}
             {pagos.length < 3 ? <button onClick={() => setPagos((ps) => [...ps, { medio: "YAPE", monto: Math.max(0, total - pagado).toFixed(2) }])} className="h-8 px-3 rounded-full border border-dashed border-foil-3 text-[13px] text-ink-2">+ Pago mixto</button> : null}
           </div>
-          {requiereReceta ? (
-            <fieldset className="rounded-2xl bg-ambar-claro/60 p-4 grid sm:grid-cols-3 gap-2">
-              <legend className="text-[12.5px] font-semibold text-[#8a5b00] px-1">Datos de la receta (RN-03)</legend>
-              <Entrada placeholder="Médico" value={receta.medico} onChange={(e) => setReceta({ ...receta, medico: e.target.value })} />
-              <Entrada placeholder="CMP" value={receta.cmp} onChange={(e) => setReceta({ ...receta, cmp: e.target.value })} />
-              <Entrada placeholder="N.º de receta" value={receta.numero} onChange={(e) => setReceta({ ...receta, numero: e.target.value })} />
-            </fieldset>
-          ) : null}
-          {requiereAutorizacion ? (
-            <fieldset className="rounded-2xl bg-foil p-4 grid sm:grid-cols-2 gap-2">
-              <legend className="text-[12.5px] font-semibold text-ink-2 px-1">El descuento supera el 5%: clave de supervisor</legend>
-              <Entrada placeholder="Usuario" value={autorizacion.login} onChange={(e) => setAutorizacion({ ...autorizacion, login: e.target.value })} />
-              <Entrada type="password" placeholder="Clave" value={autorizacion.password} onChange={(e) => setAutorizacion({ ...autorizacion, password: e.target.value })} />
-            </fieldset>
-          ) : null}
           <div className="flex items-end justify-between rounded-2xl bg-foil px-4 py-3">
             <div><p className="text-[12.5px] text-ink-2">Recibido</p><p className="font-semibold">{soles(pagado || total)}</p></div>
             <div className="text-right"><p className="text-[12.5px] text-ink-2">Vuelto</p><p className="cifra text-[28px] leading-none text-petroleo">{soles(vuelto)}</p></div>
@@ -381,6 +402,12 @@ export default function Vender() {
                 <Insignia tono={resultado.cpeEstado === "ACEPTADO" ? "ok" : resultado.cpeEstado === "NO_APLICA" ? "gris" : "ambar"}>{resultado.cpeEstado === "ACEPTADO" ? "SUNAT aceptó el comprobante" : resultado.cpeEstado === "NO_APLICA" ? "No se envía a SUNAT" : "CPE pendiente de envío"}</Insignia>
               </div>
             </div>
+            {mensaje ? (
+              <div className="mt-4 rounded-2xl bg-[linear-gradient(160deg,#fff6f9,#fff)] border border-amor/20 px-4 py-3.5" aria-live="polite">
+                <p className="font-display font-semibold text-[15px] text-amor-2 leading-snug">{mensaje}</p>
+                {resultado.meta ? <div className="mt-3"><BarraMeta meta={resultado.meta} compacta /></div> : null}
+              </div>
+            ) : null}
             {resultado.comisionVenta > 0 ? (
               <div className="mt-4 rounded-2xl bg-amor-claro px-4 py-3 flex justify-between items-center text-sm">
                 <span className="text-amor-2 font-semibold">+{soles(resultado.comisionVenta)} de comisión</span>

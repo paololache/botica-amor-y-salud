@@ -10,6 +10,7 @@ export const PARAMETROS_DEFECTO = {
   aviso_campana_dias: "3",
   boleta_dni_desde: "700",
   descuento_max_pct: "5",
+  recordatorio_campana_min: "15", // minutos sin vender antes de recordar los productos en campaña (0 = apagado)
 } as const;
 
 export type ClaveParametro = keyof typeof PARAMETROS_DEFECTO;

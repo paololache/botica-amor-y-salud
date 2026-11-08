@@ -50,6 +50,69 @@
       "when": 1793567017885,
       "tag": "0006_quita_rol_unico",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1794009478003,
+      "tag": "0007_transferencias",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1794061306642,
+      "tag": "0008_transferencia_lote",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1794064525686,
+      "tag": "0009_transferencia_como_venta",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1794065864012,
+      "tag": "0010_destino_con_dni",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1794073659507,
+      "tag": "0011_campana_precio",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1794074174422,
+      "tag": "0012_uso_modulo",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1794080622079,
+      "tag": "0013_meta_diaria",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1794145686900,
+      "tag": "0014_cierre_declarado",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1794152143827,
+      "tag": "0015_meta_mensual",
+      "breakpoints": true
     }
   ]
 }

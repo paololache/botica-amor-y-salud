@@ -17,6 +17,7 @@ export const esquemaNuevoUsuario = z.object({
   login: z.string().trim().toLowerCase().regex(/^[a-z0-9._-]{3,30}$/, "usa de 3 a 30 letras, números, punto o guion, sin espacios"),
   password: clave,
   roles: perfiles,
+  metaDiaria: z.number().positive("la meta debe ser mayor a 0").max(1_000_000).nullable().optional(),
 });
 
 export const esquemaEdicionUsuario = z.object({
@@ -24,9 +25,10 @@ export const esquemaEdicionUsuario = z.object({
   roles: perfiles,
   activo: z.boolean(),
   password: clave.optional(),
+  metaDiaria: z.number().positive("la meta debe ser mayor a 0").max(1_000_000).nullable().optional(),
 });
 
-const columnas = { id: usuario.id, nombre: usuario.nombre, login: usuario.login, roles: usuario.roles, activo: usuario.activo, creadoEn: usuario.creadoEn };
+const columnas = { id: usuario.id, nombre: usuario.nombre, login: usuario.login, roles: usuario.roles, activo: usuario.activo, metaDiaria: usuario.metaDiaria, creadoEn: usuario.creadoEn };
 
 export async function listarUsuarios(db: Db) {
   return db.select(columnas).from(usuario).orderBy(asc(usuario.nombre));
@@ -37,7 +39,7 @@ export async function crearUsuario(db: Db, user: Sesion, input: z.infer<typeof e
   return db.transaction(async (tx) => {
     const [dup] = await tx.select({ id: usuario.id }).from(usuario).where(eq(usuario.login, input.login));
     if (dup) throw new ErrorNegocio("LOGIN_DUPLICADO", `El usuario «${input.login}» ya existe. Elige otro.`, 409);
-    const [u] = await tx.insert(usuario).values({ nombre: input.nombre, login: input.login, passwordHash, roles: input.roles }).returning(columnas);
+    const [u] = await tx.insert(usuario).values({ nombre: input.nombre, login: input.login, passwordHash, roles: input.roles, metaDiaria: input.metaDiaria ?? null }).returning(columnas);
     await tx.insert(auditoria).values({ usuarioId: user.id, accion: "CREAR_USUARIO", entidad: "usuario", entidadId: u.id, detalle: { login: u.login, roles: u.roles } });
     return u;
   });
@@ -81,8 +83,8 @@ export async function editarUsuario(db: Db, user: Sesion, id: number, input: z.i
       const [abierta] = await tx.select({ id: sesionCaja.id }).from(sesionCaja).where(and(eq(sesionCaja.usuarioId, id), inArray(sesionCaja.estado, ["ABIERTA", "EN_CIERRE"])));
       if (abierta) throw new ErrorNegocio("CAJA_ABIERTA", `${u.nombre} tiene una caja sin cerrar. Ciérrala antes de ${input.activo ? "quitarle el acceso a caja" : "desactivar el usuario"}.`, 409);
     }
-    const [n] = await tx.update(usuario).set({ nombre: input.nombre, roles: input.roles, activo: input.activo, ...(passwordHash ? { passwordHash } : {}) }).where(eq(usuario.id, id)).returning(columnas);
-    await tx.insert(auditoria).values({ usuarioId: user.id, accion: "EDITAR_USUARIO", entidad: "usuario", entidadId: id, detalle: { login: u.login, antes: { nombre: u.nombre, roles: u.roles as Rol[], activo: u.activo }, despues: { nombre: n.nombre, roles: n.roles, activo: n.activo }, claveCambiada: !!passwordHash } });
+    const [n] = await tx.update(usuario).set({ nombre: input.nombre, roles: input.roles, activo: input.activo, ...(input.metaDiaria !== undefined ? { metaDiaria: input.metaDiaria } : {}), ...(passwordHash ? { passwordHash } : {}) }).where(eq(usuario.id, id)).returning(columnas);
+    await tx.insert(auditoria).values({ usuarioId: user.id, accion: "EDITAR_USUARIO", entidad: "usuario", entidadId: id, detalle: { login: u.login, antes: { nombre: u.nombre, roles: u.roles as Rol[], activo: u.activo, metaDiaria: u.metaDiaria }, despues: { nombre: n.nombre, roles: n.roles, activo: n.activo, metaDiaria: n.metaDiaria }, claveCambiada: !!passwordHash } });
     return n;
   });
 }

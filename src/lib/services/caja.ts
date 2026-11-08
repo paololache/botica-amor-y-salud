@@ -1,18 +1,17 @@
 import { and, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
-import { conteoEfectivo, monto, montoOCero, texto } from "../validacion";
+import { monto, montoOCero, texto } from "../validacion";
 import { schema, type Db } from "@/db";
 import type { Sesion } from "../auth";
-import { tieneRol } from "../permisos";
-import { ErrorNegocio, MEDIOS, r2, totalConteo, type Medio } from "../util";
+import { tieneRol, verCostos } from "../permisos";
+import { ErrorNegocio, MEDIOS, r2, type Medio } from "../util";
 import { filas } from "../sqlrows";
-import { parametros } from "./parametros";
 
-const { caja, sesionCaja, movimientoCaja, venta, ventaPago, usuario, comision, auditoria } = schema;
+const { caja, sesionCaja, movimientoCaja, venta, ventaPago, usuario, cliente, comision, auditoria } = schema;
 
 export const CONCEPTOS_CAJA = {
-  INGRESO: ["Sencillo para vuelto", "Reposición de fondo", "Otro ingreso"],
+  INGRESO: ["Sencillo para vuelto", "Reposición de efectivo", "Otro ingreso"],
   EGRESO: ["Pago menor a proveedor", "Limpieza y mantenimiento", "Movilidad", "Útiles de oficina", "Otro egreso"],
 } as const;
 
@@ -28,16 +27,9 @@ export async function sesionDelUsuario(db: Db, usuarioId: number) {
 export async function estadoCaja(db: Db, user: Sesion) {
   const sesion = await sesionDelUsuario(db, user.id);
   const cajas = await db.select().from(caja).orderBy(caja.nombre);
-  const abiertas = await db.select({ cajaId: sesionCaja.cajaId, usuario: usuario.nombre, estado: sesionCaja.estado })
-    .from(sesionCaja).innerJoin(usuario, eq(usuario.id, sesionCaja.usuarioId))
-    .where(inArray(sesionCaja.estado, ABIERTAS));
-  const lista = [];
-  for (const c of cajas) {
-    const [ult] = await db.select({ fondo: sesionCaja.fondoSiguiente }).from(sesionCaja)
-      .where(and(eq(sesionCaja.cajaId, c.id), eq(sesionCaja.estado, "CERRADA"))).orderBy(desc(sesionCaja.id)).limit(1);
-    const ocupada = abiertas.find((a) => a.cajaId === c.id);
-    lista.push({ id: c.id, nombre: c.nombre, ocupadaPor: ocupada?.usuario ?? null, fondoSugerido: ult?.fondo ?? 0 });
-  }
+  const principal = await cajaPrincipal(db);
+  const [ocupada] = await db.select({ usuario: usuario.nombre }).from(sesionCaja).innerJoin(usuario, eq(usuario.id, sesionCaja.usuarioId))
+    .where(and(eq(sesionCaja.cajaId, principal.id), inArray(sesionCaja.estado, ABIERTAS)));
   let resumen = null;
   if (sesion) {
     const [v] = await db.select({ n: sql<number>`count(*)`.mapWith(Number) }).from(venta)
@@ -52,35 +44,38 @@ export async function estadoCaja(db: Db, user: Sesion) {
     resumen = {
       tickets: v?.n ?? 0, movimientos, ventas, totalVentas: r2(ventas.reduce((a, x) => a + x.total, 0)), anuladas: an?.n ?? 0,
       esperado: await calcularEsperado(db, sesion.id),
+      virtuales: await pagosVirtuales(db, sesion.id),
     };
   }
-  return { sesion: sesion ? { id: sesion.id, cajaId: sesion.cajaId, turno: sesion.turno, abiertaEn: sesion.abiertaEn, estado: sesion.estado, fondoInicial: sesion.fondoInicial, caja: cajas.find((c) => c.id === sesion.cajaId)?.nombre } : null, cajas: lista, resumen, conceptos: CONCEPTOS_CAJA };
+  return { sesion: sesion ? { id: sesion.id, cajaId: sesion.cajaId, turno: sesion.turno, abiertaEn: sesion.abiertaEn, estado: sesion.estado, montoApertura: sesion.fondoInicial, caja: cajas.find((c) => c.id === sesion.cajaId)?.nombre } : null, caja: { nombre: principal.nombre, ocupadaPor: ocupada?.usuario ?? null }, resumen, conceptos: CONCEPTOS_CAJA };
 }
 
+/** La botica trabaja con una sola caja: la primera registrada (se crea si no existe). */
+async function cajaPrincipal(db: Db) {
+  const [c] = await db.select().from(caja).orderBy(caja.id).limit(1);
+  if (c) return c;
+  const [nueva] = await db.insert(caja).values({ nombre: "CAJA 01" }).onConflictDoNothing().returning();
+  return nueva ?? (await db.select().from(caja).orderBy(caja.id).limit(1))[0];
+}
+
+/** Abrir caja: turno y el efectivo con que se empieza, digitado como un solo monto. */
 export const esquemaApertura = z.object({
-  cajaId: z.number().int(),
   turno: z.enum(["MAÑANA", "TARDE", "NOCHE", "COMPLETO"]),
-  conteo: conteoEfectivo,
-  observacion: z.string().optional(),
+  monto: montoOCero,
+  observacion: z.string().trim().max(250).optional(),
 });
 
 export async function abrirCaja(db: Db, user: Sesion, input: z.infer<typeof esquemaApertura>) {
-  const fondo = totalConteo(input.conteo);
+  const principal = await cajaPrincipal(db);
   return db.transaction(async (tx) => {
-    await tx.execute(sql`select id from caja where id = ${input.cajaId} for update`);
-    if (await sesionDelUsuario(tx, user.id)) throw new ErrorNegocio("YA_TIENE_CAJA", "Ya tienes una caja abierta. Ciérrala antes de abrir otra.");
+    await tx.execute(sql`select id from caja where id = ${principal.id} for update`);
+    if (await sesionDelUsuario(tx, user.id)) throw new ErrorNegocio("YA_TIENE_CAJA", "Ya tienes la caja abierta.");
     const [ocupada] = await tx.select({ usuario: usuario.nombre }).from(sesionCaja).innerJoin(usuario, eq(usuario.id, sesionCaja.usuarioId))
-      .where(and(eq(sesionCaja.cajaId, input.cajaId), inArray(sesionCaja.estado, ABIERTAS)));
-    if (ocupada) throw new ErrorNegocio("CAJA_OCUPADA", `Esta caja está abierta por ${ocupada.usuario}.`, 409);
-    const [ult] = await tx.select({ fondo: sesionCaja.fondoSiguiente }).from(sesionCaja)
-      .where(and(eq(sesionCaja.cajaId, input.cajaId), eq(sesionCaja.estado, "CERRADA"))).orderBy(desc(sesionCaja.id)).limit(1);
-    const sugerido = ult?.fondo ?? null;
-    if (sugerido !== null && r2(sugerido) !== fondo && !(input.observacion && input.observacion.trim().length >= 5)) {
-      throw new ErrorNegocio("FONDO_DISTINTO", `El fondo contado (S/ ${fondo.toFixed(2)}) no coincide con el que quedó en el último cierre (S/ ${sugerido.toFixed(2)}). Escribe una observación.`, 422);
-    }
+      .where(and(eq(sesionCaja.cajaId, principal.id), inArray(sesionCaja.estado, ABIERTAS)));
+    if (ocupada) throw new ErrorNegocio("CAJA_OCUPADA", `La caja está abierta por ${ocupada.usuario}. Debe cerrarla antes de que abras tu turno.`, 409);
     const [s] = await tx.insert(sesionCaja).values({
-      cajaId: input.cajaId, usuarioId: user.id, turno: input.turno, fondoInicial: fondo, conteoApertura: input.conteo,
-      observacionApertura: input.observacion ?? null, estado: "ABIERTA",
+      cajaId: principal.id, usuarioId: user.id, turno: input.turno, fondoInicial: r2(input.monto), conteoApertura: null,
+      observacionApertura: input.observacion || null, estado: "ABIERTA",
     }).returning();
     return s;
   });
@@ -167,32 +162,48 @@ export async function calcularEsperado(db: Db, sesionId: number): Promise<Record
   return esperado;
 }
 
+/** Cada cobro que no es en efectivo (ventas e ingresos manuales), para que el cajero confirme que llegó. */
+export async function pagosVirtuales(db: Db, sesionId: number) {
+  const ventas = await db.select({ id: ventaPago.id, medio: ventaPago.medio, monto: ventaPago.monto, serie: venta.serie, numero: venta.numero, fecha: venta.fecha })
+    .from(ventaPago).innerJoin(venta, eq(venta.id, ventaPago.ventaId))
+    .where(and(eq(venta.sesionId, sesionId), eq(venta.estado, "EMITIDA"), ne(ventaPago.medio, "EFECTIVO"))).orderBy(venta.fecha, ventaPago.id);
+  const ingresos = await db.select().from(movimientoCaja)
+    .where(and(eq(movimientoCaja.sesionId, sesionId), eq(movimientoCaja.tipo, "INGRESO"), ne(movimientoCaja.medio, "EFECTIVO"))).orderBy(movimientoCaja.fecha);
+  return [
+    ...ventas.map((v) => ({ clave: `V${v.id}`, origen: "Venta", referencia: `${v.serie}-${v.numero}`, medio: v.medio as Medio, monto: r2(v.monto), fecha: v.fecha })),
+    ...ingresos.map((m) => ({ clave: `M${m.id}`, origen: "Ingreso", referencia: m.comprobante || m.concepto, medio: m.medio as Medio, monto: r2(m.monto), fecha: m.fecha })),
+  ].sort((a, b) => +new Date(a.fecha) - +new Date(b.fecha));
+}
+
+const sumaVirtual = (x: Record<string, number> | null | undefined) => r2(MEDIOS.filter((m) => m !== "EFECTIVO").reduce((a, m) => a + (x?.[m] ?? 0), 0));
+
+/** Cierre declarado: el cajero escribe el efectivo que tiene y marca los pagos virtuales que sí llegaron. */
 export const esquemaCierre = z.object({
-  conteo: conteoEfectivo,
-  virtuales: z.object({ YAPE: montoOCero, PLIN: montoOCero, TARJETA: montoOCero, TRANSFERENCIA: montoOCero }),
-  fondoSiguiente: montoOCero,
-  observacion: z.string().optional(),
+  efectivo: montoOCero,
+  confirmados: z.array(z.string().max(20)).max(5000).default([]),
+  observacion: z.string().trim().max(250).optional(),
 });
 
-/** Cierre de caja: el cajero registra lo contado; el sistema calcula la diferencia contra lo esperado. */
 export async function cerrarCaja(db: Db, user: Sesion, input: z.infer<typeof esquemaCierre>) {
   const s = await sesionDelUsuario(db, user.id);
   if (!s) throw new ErrorNegocio("SIN_CAJA", "No tienes una caja abierta.");
   if (s.estado === "EN_CIERRE") throw new ErrorNegocio("EN_CIERRE", "Tu cierre ya fue registrado y espera la validación del administrador.");
-  const efectivo = totalConteo(input.conteo);
-  if (input.fondoSiguiente > efectivo) throw new ErrorNegocio("FONDO_MAYOR", "El fondo que queda no puede ser mayor al efectivo contado.");
-  const contado: Record<Medio, number> = { EFECTIVO: efectivo, ...input.virtuales };
   const esperado = await calcularEsperado(db, s.id);
-  const diferencia = r2(MEDIOS.reduce((acc, m) => acc + (contado[m] - esperado[m]), 0));
-  const { umbral_diferencia_caja } = await parametros(db);
-  const requiereValidacion = Math.abs(diferencia) > umbral_diferencia_caja && !user.roles.includes("ADMIN");
-  const estado = requiereValidacion ? "EN_CIERRE" : "CERRADA";
+  const virtuales = await pagosVirtuales(db, s.id);
+  const confirmados = new Set(input.confirmados);
+  const pendientes = virtuales.filter((v) => !confirmados.has(v.clave));
+  const contado = { ...esperado, EFECTIVO: r2(input.efectivo) };
+  for (const p of pendientes) contado[p.medio] = r2(contado[p.medio] - p.monto);
+  const diferencia = r2(MEDIOS.reduce((a, m) => a + contado[m] - esperado[m], 0));
   await db.update(sesionCaja).set({
-    conteoCierre: input.conteo, contado, esperado, diferencia, fondoSiguiente: r2(input.fondoSiguiente), retiro: r2(efectivo - input.fondoSiguiente),
-    observacion: input.observacion ?? null, estado, cerradaEn: estado === "CERRADA" ? new Date() : null,
-    validadoPor: estado === "CERRADA" && Math.abs(diferencia) > umbral_diferencia_caja ? user.id : null,
+    conteoCierre: null, contado, esperado, diferencia, fondoSiguiente: null, retiro: contado.EFECTIVO, pagosNoConfirmados: pendientes.map((p) => p.clave),
+    observacion: input.observacion || null, estado: "CERRADA", cerradaEn: new Date(), validadoPor: null,
   }).where(eq(sesionCaja.id, s.id));
-  return { sesionId: s.id, estado, requiereValidacion, diferencia };
+  return {
+    sesionId: s.id, estado: "CERRADA", requiereValidacion: false, diferencia,
+    efectivo: { sistema: esperado.EFECTIVO, declarado: contado.EFECTIVO },
+    virtual: { sistema: sumaVirtual(esperado), declarado: sumaVirtual(contado), sinConfirmar: pendientes.length },
+  };
 }
 
 export const esquemaValidacion = z.object({ sesionId: z.number().int(), login: z.string().optional(), password: z.string().optional(), observacion: texto(5) });
@@ -231,6 +242,29 @@ export async function reporteCierre(db: Db, user: Sesion, sesionId: number) {
   const eliminados = (await filas<FilaEliminacion>(db, consultaEliminaciones(sql`(a.detalle->>'sesionId')::int = ${s.id}`))).map(mapearEliminacion);
   const [com] = await db.select({ t: sql<number>`coalesce(sum(${comision.monto}),0)`.mapWith(Number) }).from(comision)
     .innerJoin(venta, eq(venta.id, comision.ventaId)).where(and(eq(venta.sesionId, s.id), ne(comision.estado, "REVERTIDA")));
+  const conCostos = verCostos(user.roles);
+  const ventasTurno = await db.select({
+    id: venta.id, fecha: venta.fecha, tipo: venta.tipoComprobante, serie: venta.serie, numero: venta.numero, estado: venta.estado,
+    total: venta.total, costo: venta.costoTotal, usuario: usuario.nombre, cliente: cliente.nombre,
+  }).from(venta).innerJoin(usuario, eq(usuario.id, venta.usuarioId)).leftJoin(cliente, eq(cliente.id, venta.clienteId))
+    .where(eq(venta.sesionId, s.id)).orderBy(venta.fecha, venta.id);
+  const pagosTurno = ventasTurno.length ? await db.select({ ventaId: ventaPago.ventaId, medio: ventaPago.medio, monto: ventaPago.monto })
+    .from(ventaPago).where(inArray(ventaPago.ventaId, ventasTurno.map((v) => v.id))).orderBy(ventaPago.id) : [];
+  const usuariosMov = new Map((await db.select({ id: usuario.id, nombre: usuario.nombre }).from(usuario)
+    .where(inArray(usuario.id, [...new Set([s.usuarioId, ...movimientos.map((m) => m.usuarioId)])]))).map((x) => [x.id, x.nombre]));
+  /** Todas las transacciones del turno en orden: ventas (con su comprobante y medios de pago) e ingresos o egresos de caja. */
+  const transacciones = [
+    ...ventasTurno.map((v) => ({
+      clave: `V${v.id}`, ventaId: v.id, fecha: v.fecha, tipo: v.tipo as string, numero: `${v.serie}-${v.numero}`, cliente: v.cliente, usuario: v.usuario, estado: v.estado,
+      pagos: pagosTurno.filter((p) => p.ventaId === v.id).map((p) => ({ medio: p.medio as string, monto: r2(p.monto) })), total: r2(v.total),
+      ...(conCostos ? { ganancia: v.estado === "EMITIDA" ? r2(v.total / 1.18 - v.costo) : null } : {}),
+    })),
+    ...movimientos.map((m) => ({
+      clave: `M${m.id}`, ventaId: null, fecha: m.fecha, tipo: m.tipo as string, numero: m.comprobante, cliente: m.concepto, usuario: usuariosMov.get(m.usuarioId) ?? null, estado: "REGISTRADO",
+      pagos: [{ medio: m.medio as string, monto: r2(m.monto) }], total: r2(m.tipo === "EGRESO" ? -m.monto : m.monto),
+      ...(conCostos ? { ganancia: null } : {}),
+    })),
+  ].sort((a, b) => +new Date(a.fecha) - +new Date(b.fecha));
   const emitidas = porComprobante.filter((p) => p.estado === "EMITIDA");
   const ventasTotal = r2(emitidas.reduce((a, p) => a + p.total, 0));
   const costo = r2(emitidas.reduce((a, p) => a + p.costo, 0));
@@ -241,12 +275,17 @@ export async function reporteCierre(db: Db, user: Sesion, sesionId: number) {
     ventas: { total: ventasTotal, porComprobante: emitidas.map((p) => ({ tipo: p.tipo, cantidad: p.n, total: r2(p.total) })) },
     anuladas: { cantidad: anuladas.reduce((a, p) => a + p.n, 0), total: r2(anuladas.reduce((a, p) => a + p.total, 0)) },
     movimientos: movimientos.map((m) => ({ tipo: m.tipo, concepto: m.concepto, medio: m.medio, monto: m.monto, comprobante: m.comprobante, fecha: m.fecha })),
+    saldoEfectivo: s.contado?.EFECTIVO ?? 0, saldoVirtual: sumaVirtual(s.contado),
+    virtuales: (await pagosVirtuales(db, s.id)).map((v) => ({ ...v, confirmado: !(s.pagosNoConfirmados ?? []).includes(v.clave) })),
     arqueo: MEDIOS.map((m) => ({ medio: m, esperado: s.esperado?.[m] ?? 0, contado: s.contado?.[m] ?? 0, diferencia: r2((s.contado?.[m] ?? 0) - (s.esperado?.[m] ?? 0)) })),
     diferencia: s.diferencia, fondoSiguiente: s.fondoSiguiente, retiro: s.retiro,
     comisiones: r2(com?.t ?? 0),
     eliminados,
-    margen: ventasTotal > 0 ? r2(((ventasTotal / 1.18 - costo) / (ventasTotal / 1.18)) * 100) : null,
-    costoVentas: costo,
+    transacciones,
+    ...(conCostos ? {
+      margen: ventasTotal > 0 ? r2(((ventasTotal / 1.18 - costo) / (ventasTotal / 1.18)) * 100) : null,
+      costoVentas: costo, ganancia: r2(ventasTotal / 1.18 - costo),
+    } : {}),
   };
 }
 
@@ -254,9 +293,9 @@ export async function listarSesiones(db: Db, user: Sesion, limite = 60) {
   const cond = tieneRol(user.roles, "ADMIN", "CONTADOR") ? undefined : eq(sesionCaja.usuarioId, user.id);
   const rows = await db.select({
     id: sesionCaja.id, caja: caja.nombre, cajero: usuario.nombre, turno: sesionCaja.turno, abiertaEn: sesionCaja.abiertaEn,
-    cerradaEn: sesionCaja.cerradaEn, estado: sesionCaja.estado, diferencia: sesionCaja.diferencia,
+    cerradaEn: sesionCaja.cerradaEn, estado: sesionCaja.estado, diferencia: sesionCaja.diferencia, contado: sesionCaja.contado,
   }).from(sesionCaja).innerJoin(caja, eq(caja.id, sesionCaja.cajaId)).innerJoin(usuario, eq(usuario.id, sesionCaja.usuarioId))
     .where(cond ? and(cond, or(eq(sesionCaja.estado, "CERRADA"), eq(sesionCaja.estado, "EN_CIERRE"))) : or(eq(sesionCaja.estado, "CERRADA"), eq(sesionCaja.estado, "EN_CIERRE")))
     .orderBy(desc(sesionCaja.id)).limit(limite);
-  return rows;
+  return rows.map(({ contado, ...r }) => ({ ...r, saldoEfectivo: contado?.EFECTIVO ?? 0, saldoVirtual: sumaVirtual(contado) }));
 }

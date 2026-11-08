@@ -4,11 +4,12 @@ import { z } from "zod";
 import { monto, texto } from "../validacion";
 import { schema, type Db } from "@/db";
 import type { Sesion } from "../auth";
-import { tieneRol } from "../permisos";
+import { tieneRol, verCostos } from "../permisos";
 import { ErrorNegocio, hoy as hoyLima, inicioDiaLima, MEDIOS, r2, sumarDias } from "../util";
 import { asignarFEFO, bloquearProductos, registrarKardex, sumarLote } from "./inventario";
-import { campanaActiva } from "./campanas";
+import { campanaActiva, preciosCampana } from "./campanas";
 import { revertirComisionesVenta, misComisiones } from "./comisiones";
+import { metaDelDia } from "./metas";
 import { sesionDelUsuario } from "./caja";
 import { parametros } from "./parametros";
 import { enviarCpe } from "./sunat";
@@ -32,7 +33,7 @@ export const esquemaVenta = z.object({
 });
 export type EntradaVenta = z.infer<typeof esquemaVenta>;
 
-async function siguienteNumero(tx: Db, serie: string): Promise<number> {
+export async function siguienteNumero(tx: Db, serie: string): Promise<number> {
   const [r] = await tx.insert(correlativo).values({ serie, ultimo: 1 })
     .onConflictDoUpdate({ target: correlativo.serie, set: { ultimo: sql`${correlativo.ultimo} + 1` } })
     .returning({ ultimo: correlativo.ultimo });
@@ -49,27 +50,36 @@ export async function crearVenta(db: Db, user: Sesion, input: EntradaVenta) {
   const pres = await db.select({ p: presentacion, prod: producto }).from(presentacion).innerJoin(producto, eq(producto.id, presentacion.productoId))
     .where(inArray(presentacion.id, presIds));
   const mapa = new Map(pres.map((x) => [x.p.id, x]));
+  const enCampana = await preciosCampana(db, [...new Set(pres.map((x) => x.prod.id))], hoy);
 
   let total = 0, descuento = 0;
-  let requiereAutorizacion = false, requiereReceta = false;
+  let requiereAutorizacion = false;
   const lineas = input.items.map((it) => {
     const x = mapa.get(it.presentacionId);
     if (!x || !x.p.activo || !x.prod.activo) throw new ErrorNegocio("PRODUCTO_INVALIDO", "Uno de los productos ya no está disponible.");
     if (it.descuentoPct > p.descuento_max_pct) requiereAutorizacion = true;
-    if (x.prod.condicionVenta !== "LIBRE") requiereReceta = true;
+    // Se cobra el precio de campaña si lo hay; la diferencia con el de lista queda como descuento de la línea.
+    const precio = Math.min(enCampana.get(x.p.id) ?? x.p.pvp, x.p.pvp);
     const bruto = r2(x.p.pvp * it.cantidad);
-    const desc = r2(bruto * it.descuentoPct / 100);
+    const conCampana = r2(precio * it.cantidad);
+    const desc = r2(bruto - conCampana + conCampana * it.descuentoPct / 100);
     total += bruto - desc; descuento += desc;
     return { ...it, pres: x.p, prod: x.prod, unidades: it.cantidad * x.p.factor, bruto, desc, subtotal: r2(bruto - desc) };
   });
   total = r2(total); descuento = r2(descuento);
+
+  // Regla de negocio: un descuento no puede dejar el producto por debajo del costo + IGV; vender bajo costo es decisión
+  // solo del administrador (el precio de lista y el de campaña ya los fija él, por eso no se bloquean).
+  if (!tieneRol(user.roles, "ADMIN")) {
+    const bajo = lineas.filter((l) => l.descuentoPct > 0 && l.unidades > 0 && l.subtotal / l.unidades < l.prod.costoPromedio * 1.18 - 0.00005);
+    if (bajo.length) throw new ErrorNegocio("BAJO_COSTO", `Con ese descuento ${bajo.map((l) => l.prod.nombre).join(", ")} queda por debajo del costo. Solo el administrador puede vender bajo costo.`, 403);
+  }
 
   if (requiereAutorizacion && !user.roles.includes("ADMIN")) {
     if (!input.autorizacion) throw new ErrorNegocio("REQUIERE_AUTORIZACION", `El descuento supera el ${p.descuento_max_pct}% permitido. Pide la clave de un supervisor.`, 422);
     const [a] = await db.select().from(usuario).where(and(eq(usuario.login, input.autorizacion.login), eq(usuario.activo, true)));
     if (!a || !a.roles.includes("ADMIN") || !(await bcrypt.compare(input.autorizacion.password, a.passwordHash))) throw new ErrorNegocio("CREDENCIALES", "La clave del supervisor no es correcta.", 401);
   }
-  if (requiereReceta && !input.receta) throw new ErrorNegocio("REQUIERE_RECETA", "Esta venta incluye un producto con receta: registra médico, CMP y número de receta (RN-03).", 422);
   if (input.tipoComprobante === "FACTURA" && !(input.cliente?.tipoDoc === "RUC" && /^(10|20)\d{9}$/.test(input.cliente.numero)))
     throw new ErrorNegocio("RUC_INVALIDO", "La factura exige un RUC válido de 11 dígitos (RN-04).", 422);
   if (input.tipoComprobante === "BOLETA" && total > p.boleta_dni_desde && !(input.cliente?.tipoDoc === "DNI" && /^\d{8}$/.test(input.cliente.numero)))
@@ -100,6 +110,8 @@ export async function crearVenta(db: Db, user: Sesion, input: EntradaVenta) {
     }).returning();
     const ref = `${serie}-${String(numero).padStart(6, "0")}`;
     let costoTotal = 0, comisionVenta = 0;
+    // El administrador vende al mismo precio (la campaña no cambia el precio), pero no comisiona.
+    const comisiona = !tieneRol(user.roles, "ADMIN");
     for (const l of lineas) {
       const asign = await asignarFEFO(tx, l.prod.id, l.unidades, hoy);
       let restante = l.subtotal;
@@ -114,7 +126,7 @@ export async function crearVenta(db: Db, user: Sesion, input: EntradaVenta) {
           precioUnitario: l.pres.pvp, descuento: r2(l.desc * a.unidades / l.unidades), subtotal: parte, costoUnitario: costoU, origen: l.origen,
         }).returning({ id: ventaDetalle.id });
         await registrarKardex(tx, { productoId: l.prod.id, loteId: a.loteId, tipo: "VENTA", documentoTipo: input.tipoComprobante, documentoId: v.id, documentoRef: ref, salida: a.unidades, costoUnitario: costoU, usuarioId: user.id });
-        const camp = await campanaActiva(tx, l.prod.id, a.loteId, hoy);
+        const camp = comisiona ? await campanaActiva(tx, l.prod.id, a.loteId, hoy) : null;
         if (camp) {
           const base = r2(parte / 1.18);
           const monto = r2(base * camp.porcentaje / 100);
@@ -130,8 +142,8 @@ export async function crearVenta(db: Db, user: Sesion, input: EntradaVenta) {
 
   const cpeEstado = await enviarCpe(input.tipoComprobante);
   await db.update(venta).set({ cpeEstado }).where(eq(venta.id, resultado.id));
-  const mias = await misComisiones(db, user.id);
-  return { ...resultado, cpeEstado, comisionHoy: mias.hoy, comisionMes: mias.mes };
+  const [mias, meta] = await Promise.all([misComisiones(db, user.id), metaDelDia(db, user.id)]);
+  return { ...resultado, cpeEstado, comisionHoy: mias.hoy, comisionMes: mias.mes, meta };
 }
 
 export const esquemaAnulacion = z.object({ motivo: texto(5) });
@@ -150,6 +162,8 @@ export async function anularVenta(db: Db, user: Sesion, ventaId: number, input: 
       await registrarKardex(tx, { productoId: d.productoId, loteId: d.loteId, tipo: "ANULACION_VENTA", motivo: modo, documentoTipo: modo, documentoId: v.id, documentoRef: `${v.serie}-${String(v.numero).padStart(6, "0")}`, entrada: d.unidades, costoUnitario: d.costoUnitario, usuarioId: user.id });
     }
     await tx.update(venta).set({ estado: "ANULADA", anuladaPor: user.id, anuladaEn: new Date() }).where(eq(venta.id, ventaId));
+    // La transferencia que originó la factura también queda anulada: su mercadería ya volvió al stock.
+    if (v.canal === "TRANSFERENCIA") await tx.update(schema.transferencia).set({ estado: "ANULADA" }).where(eq(schema.transferencia.ventaId, ventaId));
     await revertirComisionesVenta(tx, ventaId, user.id);
     await tx.insert(auditoria).values({ usuarioId: user.id, accion: modo, entidad: "venta", entidadId: ventaId, detalle: { motivo: input.motivo, total: v.total } });
   });
@@ -160,14 +174,16 @@ export async function listarVentas(db: Db, user: Sesion, dias = 7) {
   const desde = inicioDiaLima(sumarDias(hoyLima(), -dias + 1));
   const cond = [gte(venta.fecha, desde)];
   if (!tieneRol(user.roles, "ADMIN", "CONTADOR")) cond.push(eq(venta.usuarioId, user.id));
-  return db.select({
+  const filas = await db.select({
     id: venta.id, serie: venta.serie, numero: venta.numero, fecha: venta.fecha, tipo: venta.tipoComprobante, total: venta.total, costoTotal: venta.costoTotal,
-    estado: venta.estado, cpeEstado: venta.cpeEstado, vendedor: usuario.nombre, cliente: cliente.nombre,
+    estado: venta.estado, cpeEstado: venta.cpeEstado, canal: venta.canal, vendedor: usuario.nombre, cliente: cliente.nombre,
   }).from(venta).innerJoin(usuario, eq(usuario.id, venta.usuarioId)).leftJoin(cliente, eq(cliente.id, venta.clienteId))
     .where(and(...cond)).orderBy(desc(venta.id)).limit(300);
+  return verCostos(user.roles) ? filas : filas.map(({ costoTotal: _c, ...f }) => f);
 }
 
-export async function detalleVenta(db: Db, id: number) {
+/** Detalle de una venta para ver o reimprimir su comprobante. El costo solo se incluye para quien puede ver costos. */
+export async function detalleVenta(db: Db, id: number, user?: Sesion) {
   const [v] = await db.select().from(venta).where(eq(venta.id, id));
   if (!v) throw new ErrorNegocio("NO_EXISTE", "La venta no existe.", 404);
   const items = await db.select({ producto: producto.nombre, presentacion: presentacion.nombre, lote: lote.numero, vencimiento: lote.vencimiento, cantidad: ventaDetalle.cantidad, precio: ventaDetalle.precioUnitario, subtotal: ventaDetalle.subtotal, costoUnitario: ventaDetalle.costoUnitario })
@@ -176,6 +192,10 @@ export async function detalleVenta(db: Db, id: number) {
   const pagos = await db.select().from(ventaPago).where(eq(ventaPago.ventaId, id));
   const [cli] = v.clienteId ? await db.select().from(cliente).where(eq(cliente.id, v.clienteId)) : [];
   const [vend] = await db.select({ nombre: usuario.nombre }).from(usuario).where(eq(usuario.id, v.usuarioId));
+  if (user && !verCostos(user.roles)) {
+    const { costoTotal: _c, ...ventaSinCosto } = v;
+    return { venta: ventaSinCosto, items: items.map(({ costoUnitario: _u, ...i }) => i), pagos, cliente: cli ?? null, vendedor: vend?.nombre ?? null };
+  }
   return { venta: v, items, pagos, cliente: cli ?? null, vendedor: vend?.nombre ?? null };
 }
 

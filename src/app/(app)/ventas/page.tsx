@@ -6,7 +6,7 @@ import { Boton, Cargando, Encabezado, Entrada, Insignia, Modal, Selector, Tarjet
 import { useUsuario } from "@/components/shell";
 import { tieneRol } from "@/lib/permisos";
 
-type V = { id: number; serie: string; numero: number; fecha: string; tipo: string; total: number; costoTotal?: number; estado: string; cpeEstado: string; vendedor: string; cliente: string | null };
+type V = { id: number; serie: string; numero: number; fecha: string; tipo: string; total: number; costoTotal?: number; estado: string; cpeEstado: string; vendedor: string; cliente: string | null; canal: string };
 
 const TIPO: Record<string, string> = { BOLETA: "Boleta", FACTURA: "Factura", NOTA_VENTA: "Nota de venta" };
 const ICONO = "size-8 grid place-items-center rounded-lg border border-foil-3 text-ink-2 hover:border-vino-2 hover:text-vino";
@@ -28,7 +28,7 @@ export default function Ventas() {
       <Encabezado titulo="Ventas" bajada={`${emitidas.length} comprobantes · ${soles(total)}${tieneRol(u.roles, "ADMIN", "CONTADOR") ? "" : " · solo tus ventas"}`}>
         <Selector value={dias} onChange={(e) => setDias(Number(e.target.value))} className="w-40"><option value={1}>Hoy</option><option value={7}>Últimos 7 días</option><option value={30}>Últimos 30 días</option></Selector>
         <Selector value={tipo} onChange={(e) => setTipo(e.target.value)} className="w-56" aria-label="Tipo de comprobante"><option value="">Todos los comprobantes</option><option value="BOLETA">Boletas</option><option value="FACTURA">Facturas</option><option value="NOTA_VENTA">Notas de venta</option></Selector>
-        {u.roles.includes("ADMIN") && pendientes ? <Boton variante="borde" onClick={async () => { const r = await api<{ aceptados: number }>("/api/ventas/reenviar", { metodo: "POST" }); avisar("ok", `${r.aceptados} CPE aceptados.`); recargar(); }}><RefreshCw size={15} /> Reenviar {pendientes} CPE</Boton> : null}
+        {u.roles.includes("ADMIN") && pendientes ? <Boton variante="borde" onClick={async () => { const r = await api<{ aceptados: number }>("/api/ventas/reenviar", { metodo: "POST" }); avisar("ok", r.aceptados === 1 ? "1 venta aceptada por SUNAT." : `${r.aceptados} ventas aceptadas por SUNAT.`); recargar(); }} title="Vuelve a enviar a SUNAT los comprobantes que quedaron pendientes"><RefreshCw size={15} /> Aceptar {pendientes} {pendientes === 1 ? "venta" : "ventas"}</Boton> : null}
       </Encabezado>
       <Tarjeta>
         {!datos ? <div className="p-5"><Cargando /></div> : lista.length ? (
@@ -36,7 +36,7 @@ export default function Ventas() {
             <thead><tr><th>Comprobante</th><th>Fecha</th><th>Vendedor</th><th>Cliente</th><th>SUNAT</th><th className="num">Total</th>{u.verCostos ? <th className="num">Costo</th> : null}<th /></tr></thead>
             <tbody>{lista.map((v) => (
               <tr key={v.id} className={v.estado === "ANULADA" ? "opacity-55" : ""}>
-                <td><span className="block text-[11.5px] text-ink-3">{TIPO[v.tipo] ?? v.tipo}</span><span className="sello">{v.serie}-{String(v.numero).padStart(6, "0")}</span>{v.estado === "ANULADA" ? <Insignia tono="rojo" className="ml-2">Anulada</Insignia> : null}</td>
+                <td><span className="block text-[11.5px] text-ink-3">{TIPO[v.tipo] ?? v.tipo}</span><span className="sello">{v.serie}-{String(v.numero).padStart(6, "0")}</span>{v.canal === "TRANSFERENCIA" ? <Insignia tono="azul" className="ml-1.5">Transferencia</Insignia> : null}{v.estado === "ANULADA" ? <Insignia tono="rojo" className="ml-2">Anulada</Insignia> : null}</td>
                 <td>{fechaHora(v.fecha)}</td><td>{v.vendedor}</td><td>{v.cliente ?? "Cliente varios"}</td>
                 <td><Insignia tono={v.cpeEstado === "ACEPTADO" ? "ok" : v.cpeEstado === "NO_APLICA" ? "gris" : "ambar"}>{v.cpeEstado === "NO_APLICA" ? "No aplica" : v.cpeEstado[0] + v.cpeEstado.slice(1).toLowerCase()}</Insignia></td>
                 <td className="num font-semibold">{soles(v.total)}</td>

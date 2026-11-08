@@ -1,0 +1,2 @@
+ALTER TABLE "transferencia_detalle" ADD COLUMN "lote_id" integer;--> statement-breakpoint
+ALTER TABLE "transferencia_detalle" ADD CONSTRAINT "transferencia_detalle_lote_id_lote_id_fk" FOREIGN KEY ("lote_id") REFERENCES "public"."lote"("id") ON DELETE no action ON UPDATE no action;

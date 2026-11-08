@@ -18,12 +18,11 @@ export function h(token, nombre) {
 export function get(token, ruta, nombre) { return http.get(`${BASE}${ruta}`, h(token, nombre || ruta)); }
 export function post(token, ruta, cuerpo, nombre) { return http.post(`${BASE}${ruta}`, JSON.stringify(cuerpo ?? {}), h(token, nombre || ruta)); }
 
-/** Abre la caja del cajero si no la tiene abierta (una caja por cajero). */
+/** Abre la caja si el usuario no la tiene abierta. La botica tiene una sola caja: solo un usuario a la vez. */
 export function asegurarCaja(token, indice) {
   const e = get(token, "/api/caja", "caja_estado").json();
   if (e.sesion) return e.sesion.id;
-  const caja = e.cajas.filter((c) => !c.ocupadaPor)[0] || e.cajas[indice % e.cajas.length];
-  const r = post(token, "/api/caja/abrir", { cajaId: caja.id, turno: "COMPLETO", conteo: { "100": 1, "50": 1 }, observacion: "Apertura de prueba de carga" }, "caja_abrir");
+  const r = post(token, "/api/caja/abrir", { turno: "COMPLETO", monto: 150 }, "caja_abrir");
   check(r, { "caja abierta": (x) => x.status === 200 });
   return r.json("id");
 }

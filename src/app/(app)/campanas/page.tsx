@@ -2,12 +2,12 @@
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { CircleCheck } from "lucide-react";
-import { api, useDatos, fechaCorta, hoyLima, sumarDias, vence } from "@/lib/cliente";
+import { api, useDatos, fechaCorta, hoyLima, soles, sumarDias, vence } from "@/lib/cliente";
 import { Boton, Campo, Cargando, Encabezado, Entrada, EntradaNumero, Insignia, Modal, Pestanas, Selector, Tarjeta, Vacio, useAviso } from "@/components/ui";
 import { BuscadorProducto } from "@/components/buscador-producto";
 
-type Camp = { id: number; nombre: string; productoId: number; producto: string; codigo: string; lote: string | null; porcentaje: number; inicio: string; fin: string; estado: string; diasRestantes: number | null };
-type Verif = { producto: { id: number; codigo: string; nombre: string }; enKardex: boolean; ultimoMovimiento: string | null; stock: number; lotes: { id: number; numero: string; vencimiento: string; cantidad: number }[] };
+type Camp = { id: number; nombre: string; productoId: number; producto: string; codigo: string; lote: string | null; porcentaje: number; precios: { presentacion: string; lista: number | null; precio: number }[]; inicio: string; fin: string; estado: string; diasRestantes: number | null };
+type Verif = { producto: { id: number; codigo: string; nombre: string }; enKardex: boolean; ultimoMovimiento: string | null; stock: number; lotes: { id: number; numero: string; vencimiento: string; cantidad: number }[]; presentaciones: { id: number; nombre: string; factor: number; pvp: number }[] };
 const TONO: Record<string, "ok" | "amor" | "gris" | "ambar" | "azul"> = { ACTIVA: "ok", PROGRAMADA: "azul", PAUSADA: "ambar", FINALIZADA: "gris" };
 
 function Campanas() {
@@ -17,6 +17,7 @@ function Campanas() {
   const [verif, setVerif] = useState<Verif | null>(null);
   const [errVerif, setErrVerif] = useState<string | null>(null);
   const [f, setF] = useState({ loteId: "", nombre: "", porcentaje: "", inicio: hoyLima(), fin: sumarDias(hoyLima(), 30), observacion: "" });
+  const [precios, setPrecios] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [ocupado, setOcupado] = useState(false);
   const [filtro, setFiltro] = useState<"vigentes" | "todas">("vigentes");
@@ -28,7 +29,7 @@ function Campanas() {
     if (!c.trim()) return;
     try {
       const v = await api<Verif>(`/api/campanas/verificar?codigo=${encodeURIComponent(c.trim())}`);
-      setVerif(v);
+      setVerif(v); setPrecios({});
       // Al cambiar de producto, el nombre sugerido cambia con él; uno escrito a mano se respeta.
       const sugerido = (n: string) => `${n.split(" ·")[0]} · promoción`;
       setF((x) => (!x.nombre || (verif && x.nombre === sugerido(verif.producto.nombre)) ? { ...x, loteId: "", nombre: sugerido(v.producto.nombre) } : { ...x, loteId: "" }));
@@ -39,9 +40,9 @@ function Campanas() {
   const guardar = async (activarAhora: boolean) => {
     setOcupado(true); setError(null);
     try {
-      const c = await api<{ estado: string }>("/api/campanas", { cuerpo: { codigo: verif!.producto.codigo, loteId: f.loteId ? Number(f.loteId) : null, nombre: f.nombre, porcentaje: Number(f.porcentaje), inicio: f.inicio, fin: f.fin, observacion: f.observacion || undefined, activarAhora } });
+      const c = await api<{ estado: string }>("/api/campanas", { cuerpo: { codigo: verif!.producto.codigo, loteId: f.loteId ? Number(f.loteId) : null, nombre: f.nombre, porcentaje: Number(f.porcentaje), precios: f.loteId ? undefined : preciosOk, inicio: f.inicio, fin: f.fin, observacion: f.observacion || undefined, activarAhora } });
       avisar("ok", c.estado === "ACTIVA" ? `Campaña activa: ${verif!.producto.nombre} comisiona ${f.porcentaje}%.` : `Campaña programada desde el ${fechaCorta(f.inicio)}.`);
-      setVerif(null); setF({ loteId: "", nombre: "", porcentaje: "", inicio: hoyLima(), fin: sumarDias(hoyLima(), 30), observacion: "" }); lista.recargar();
+      setVerif(null); setPrecios({}); setF({ loteId: "", nombre: "", porcentaje: "", inicio: hoyLima(), fin: sumarDias(hoyLima(), 30), observacion: "" }); lista.recargar();
     } catch (e) { setError((e as Error).message); } finally { setOcupado(false); }
   };
 
@@ -52,11 +53,14 @@ function Campanas() {
 
   const camps = (lista.datos ?? []).filter((c) => filtro === "todas" || c.estado !== "FINALIZADA");
   const pct = Number(f.porcentaje);
-  const valido = verif?.enKardex && verif.stock > 0 && f.nombre.trim().length >= 3 && pct > 0 && pct <= 100 && f.fin > f.inicio;
+  const preciosOk = Object.fromEntries(Object.entries(precios).filter(([, v]) => v.trim()).map(([id, v]) => [id, Number(v)]));
+  const errPrecio = (id: number, pvp: number) => { const v = precios[id]; if (!v?.trim()) return null; const n = Number(v); return !(n > 0) ? "Precio no válido" : n >= pvp ? `Debe ser menor a ${soles(pvp)}` : null; };
+  const preciosValidos = !!f.loteId || (verif?.presentaciones ?? []).every((x) => !errPrecio(x.id, x.pvp));
+  const valido = verif?.enKardex && verif.stock > 0 && f.nombre.trim().length >= 3 && pct > 0 && pct <= 100 && f.fin > f.inicio && preciosValidos;
 
   return (
     <div>
-      <Encabezado titulo="Campañas de promoción" bajada="Cada venta de un producto en campaña activa genera comisión para el vendedor: % de la campaña × precio cobrado sin IGV." />
+      <Encabezado titulo="Campañas de promoción" bajada="Mientras la campaña está activa se cobra su precio de campaña (si lo tiene) y cada venta genera comisión para el vendedor: % de la campaña × precio cobrado sin IGV. El administrador no comisiona." />
       <div className="grid xl:grid-cols-[420px_minmax(0,1fr)] gap-6 items-start">
         <Tarjeta titulo="Nueva campaña">
           <div className="px-5 pb-5 space-y-3.5">
@@ -76,6 +80,26 @@ function Campanas() {
             <Campo etiqueta="Lote (opcional)" ayuda="Si eliges un lote, solo ese lote comisiona">
               <Selector value={f.loteId} disabled={!verif} onChange={(e) => setF({ ...f, loteId: e.target.value })}><option value="">Todos los lotes</option>{verif?.lotes.map((l) => <option key={l.id} value={l.id}>{l.numero} · vence {vence(l.vencimiento)} · {l.cantidad} und.</option>)}</Selector>
             </Campo>
+            <div>
+              <p className="block text-[12.5px] font-semibold text-ink-2 mb-1.5">Precio de campaña (opcional)</p>
+              {!verif ? <p className="text-[12px] text-ink-3">Elige un producto para ver sus presentaciones.</p>
+                : f.loteId ? <p className="text-[12px] text-ink-3">El precio de campaña aplica a todo el producto. Para ponerle precio, deja el lote en «Todos los lotes».</p>
+                : (
+                  <div className="space-y-2">
+                    {verif.presentaciones.map((x) => (
+                      <div key={x.id}>
+                        <div className="grid grid-cols-[minmax(0,1fr)_auto_120px] items-center gap-2">
+                          <span className="text-[13.5px] truncate">{x.nombre}</span>
+                          <span className="text-[12.5px] text-ink-3 tabular-nums">lista {soles(x.pvp)}</span>
+                          <EntradaNumero inputMode="decimal" aria-label={`Precio de campaña de ${x.nombre}`} placeholder="Sin cambio" value={precios[x.id] ?? ""} onChange={(e) => setPrecios({ ...precios, [x.id]: e.target.value.replace(",", ".") })} className="text-right" />
+                        </div>
+                        {errPrecio(x.id, x.pvp) ? <p className="text-[12px] text-rojo text-right mt-0.5">{errPrecio(x.id, x.pvp)}</p> : null}
+                      </div>
+                    ))}
+                    <p className="text-[12px] text-ink-3">Déjalo vacío para mantener el precio de lista en esa presentación.</p>
+                  </div>
+                )}
+            </div>
             <Campo etiqueta="Nombre de la campaña"><Entrada value={f.nombre} onChange={(e) => setF({ ...f, nombre: e.target.value })} maxLength={100} /></Campo>
             <Campo etiqueta="% de comisión" ayuda="Ingreso manual, sin valor por defecto">
               <div className="relative"><EntradaNumero inputMode="decimal" value={f.porcentaje} onChange={(e) => setF({ ...f, porcentaje: e.target.value.replace(",", ".") })} placeholder="5.00" className="pr-8" /><span className="absolute right-3 top-1/2 -translate-y-1/2 text-ink-3">%</span></div>
@@ -96,10 +120,11 @@ function Campanas() {
         <Tarjeta titulo="Campañas" accion={<Pestanas valor={filtro} alCambiar={setFiltro} opciones={[{ valor: "vigentes", texto: "Vigentes" }, { valor: "todas", texto: "Todas" }]} />}>
           {!lista.datos ? <div className="p-5"><Cargando /></div> : camps.length ? (
             <div className="overflow-x-auto"><table className="tabla">
-              <thead><tr><th>Campaña</th><th className="num">%</th><th>Vigencia</th><th>Estado</th><th /></tr></thead>
+              <thead><tr><th>Campaña</th><th>Precio de campaña</th><th className="num">%</th><th>Vigencia</th><th>Estado</th><th /></tr></thead>
               <tbody>{camps.map((c) => (
                 <tr key={c.id}>
                   <td><b className="text-[14px]">{c.nombre}</b><span className="block text-[12px] text-ink-3">{c.producto} · {c.codigo}{c.lote ? ` · lote ${c.lote}` : ""}</span></td>
+                  <td className="text-[13px] whitespace-nowrap">{c.precios.length ? c.precios.map((x) => <span key={x.presentacion} className="block">{x.presentacion} <b>{soles(x.precio)}</b>{x.lista != null ? <s className="text-ink-3 ml-1">{soles(x.lista)}</s> : null}</span>) : <span className="text-ink-3">Precio de lista</span>}</td>
                   <td className="num cifra text-[18px]">{c.porcentaje}</td>
                   <td className="text-[13px] whitespace-nowrap">{fechaCorta(c.inicio)} → {fechaCorta(c.fin)}{c.diasRestantes !== null && c.estado !== "PROGRAMADA" ? <span className={`block text-[12px] ${c.diasRestantes <= 3 ? "text-rojo" : "text-ink-3"}`}>{c.diasRestantes <= 0 ? "termina hoy" : `quedan ${c.diasRestantes} días`}</span> : null}</td>
                   <td><Insignia tono={TONO[c.estado]}>{c.estado[0] + c.estado.slice(1).toLowerCase()}</Insignia></td>

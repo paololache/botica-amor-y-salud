@@ -71,7 +71,7 @@ export function Comprobante({ id, formato, imprimir }: { id: number; formato: "t
         <button onClick={() => window.print()} disabled={!d} className="inline-flex h-9 items-center gap-2 rounded-xl bg-amor px-4 text-[13.5px] font-semibold text-white hover:bg-amor-2 disabled:opacity-50"><Printer size={16} /> Imprimir</button>
         <button onClick={() => window.close()} className="inline-flex h-9 items-center gap-2 rounded-xl px-3 text-[13.5px] font-semibold text-ink-2 hover:bg-foil-2"><X size={16} /> Cerrar</button>
       </div>
-      {error ? <p className="text-center text-rojo">{error}</p> : !d ? <p className="text-center text-ink-3">Cargando comprobante…</p>
+      {error ? <div className="text-center"><p className="text-rojo">{error}</p><Link href="/" className="inline-block mt-3 font-semibold text-vino-2">Volver al panel</Link></div> : !d ? <p className="text-center text-ink-3">Cargando comprobante…</p>
         : formato === "ticket" ? <Ticket d={d} lineas={lineas} /> : <HojaA4 d={d} lineas={lineas} />}
     </div>
   );

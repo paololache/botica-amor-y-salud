@@ -4,40 +4,41 @@ import { useEffect, useState } from "react";
 import { Lock, History, Trash, ShieldAlert } from "lucide-react";
 import { api, useDatos, soles, fechaHora } from "@/lib/cliente";
 import { Boton, Campo, Entrada, EntradaNumero, Encabezado, Cargando, Insignia, Modal, Selector, Tarjeta, useAviso } from "@/components/ui";
-import { ContadorEfectivo, totalDe } from "@/components/contador";
 import { useUsuario } from "@/components/shell";
 
 type Estado = {
-  sesion: { id: number; cajaId: number; caja: string; turno: string; abiertaEn: string; estado: string; fondoInicial: number } | null;
-  cajas: { id: number; nombre: string; ocupadaPor: string | null; fondoSugerido: number }[];
+  sesion: { id: number; cajaId: number; caja: string; turno: string; abiertaEn: string; estado: string; montoApertura: number } | null;
+  caja: { nombre: string; ocupadaPor: string | null };
   resumen: {
     tickets: number; movimientos: { id: number; tipo: string; concepto: string; medio: string; monto: number; fecha: string }[];
     ventas: { medio: Medio; total: number }[]; totalVentas: number; anuladas: number; esperado: Record<Medio, number>;
+    virtuales: Virtual[];
   } | null;
   conceptos: { INGRESO: string[]; EGRESO: string[] };
 };
+type Virtual = { clave: string; origen: string; referencia: string; medio: Medio; monto: number; fecha: string };
+type Resultado = { sesionId: number; estado: string; diferencia: number; efectivo: { sistema: number; declarado: number }; virtual: { sistema: number; declarado: number; sinConfirmar: number } };
 type Medio = "EFECTIVO" | "YAPE" | "PLIN" | "TARJETA" | "TRANSFERENCIA";
 const TURNOS = ["MAÑANA", "TARDE", "NOCHE", "COMPLETO"] as const;
-const DIGITALES = ["YAPE", "PLIN", "TARJETA", "TRANSFERENCIA"] as const;
 const NOMBRE_MEDIO: Record<Medio, string> = { EFECTIVO: "Efectivo", YAPE: "Yape", PLIN: "Plin", TARJETA: "Tarjeta", TRANSFERENCIA: "Transferencia" };
-const UMBRAL = 5;
 const r2 = (n: number) => Math.round(n * 100) / 100;
+const conSigno = (n: number) => `${n > 0.004 ? "+" : n < -0.004 ? "−" : ""}${soles(Math.abs(n))}`;
+const tonoDif = (n: number) => (n < -0.004 ? "text-rojo" : n > 0.004 ? "text-ok" : "");
 
 export default function Caja() {
   const u = useUsuario();
   const avisar = useAviso();
   const { datos, recargar, cargando } = useDatos<Estado>("/api/caja");
-  const [cajaId, setCajaId] = useState<number | null>(null);
+  const [monto, setMonto] = useState("");
   const [turno, setTurno] = useState<(typeof TURNOS)[number]>("MAÑANA");
-  const [conteo, setConteo] = useState<Record<string, number>>({});
   const [obs, setObs] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [ocupado, setOcupado] = useState(false);
   const [mov, setMov] = useState({ tipo: "EGRESO" as "INGRESO" | "EGRESO", concepto: "", medio: "EFECTIVO", monto: "", comprobante: "" });
   const [cerrando, setCerrando] = useState(false);
-  const [virt, setVirt] = useState({ YAPE: "", PLIN: "", TARJETA: "", TRANSFERENCIA: "" });
-  const [fondoSig, setFondoSig] = useState("150");
-  const [resultado, setResultado] = useState<{ sesionId: number; estado: string; diferencia: number } | null>(null);
+  const [resultado, setResultado] = useState<Resultado | null>(null);
+  const [efectivo, setEfectivo] = useState("");
+  const [confirmados, setConfirmados] = useState<Set<string>>(new Set());
   const [val, setVal] = useState({ login: "", password: "", observacion: "" });
   const [borrar, setBorrar] = useState<{ id: number; tipo: string; concepto: string; medio: string; monto: number } | null>(null);
   const [motivoBorrar, setMotivoBorrar] = useState("");
@@ -53,17 +54,12 @@ export default function Caja() {
 
   if (cargando && !datos) return <Cargando alto="h-96" />;
   if (!datos) return null;
-  const elegida = datos.cajas.find((c) => c.id === (cajaId ?? datos.cajas.find((x) => !x.ocupadaPor)?.id));
-  const fondo = totalDe(conteo);
-  const difiere = elegida && fondo > 0 && elegida.fondoSugerido > 0 && Math.abs(elegida.fondoSugerido - fondo) > 0.001;
-
   const abrir = async () => {
-    if (!elegida) return;
     setOcupado(true); setError(null);
     try {
-      await api("/api/caja/abrir", { cuerpo: { cajaId: elegida.id, turno, conteo, observacion: obs || undefined } });
-      avisar("ok", `${elegida.nombre} abierta con ${soles(fondo)}.`);
-      setConteo({}); setObs(""); recargar();
+      await api("/api/caja/abrir", { cuerpo: { turno, monto: Number(monto) || 0 } });
+      avisar("ok", `Caja abierta con ${soles(Number(monto) || 0)} en efectivo.`);
+      setMonto(""); recargar();
     } catch (e) { setError((e as Error).message); } finally { setOcupado(false); }
   };
 
@@ -79,11 +75,8 @@ export default function Caja() {
   const cerrar = async () => {
     setOcupado(true); setError(null);
     try {
-      const r = await api<{ sesionId: number; estado: string; diferencia: number }>("/api/caja/cerrar", { cuerpo: {
-        conteo, virtuales: { YAPE: Number(virt.YAPE) || 0, PLIN: Number(virt.PLIN) || 0, TARJETA: Number(virt.TARJETA) || 0, TRANSFERENCIA: Number(virt.TRANSFERENCIA) || 0 },
-        fondoSiguiente: Number(fondoSig) || 0, observacion: obs || undefined,
-      } });
-      setResultado(r); setCerrando(false); setConteo({}); recargar();
+      const r = await api<Resultado>("/api/caja/cerrar", { cuerpo: { efectivo: Number(efectivo), confirmados: [...confirmados], observacion: obs || undefined } });
+      setResultado(r); setCerrando(false); setObs(""); setEfectivo(""); setConfirmados(new Set()); recargar();
     } catch (e) { setError((e as Error).message); } finally { setOcupado(false); }
   };
 
@@ -113,17 +106,28 @@ export default function Caja() {
   );
 
   if (resultado) {
-    const ok = resultado.estado === "CERRADA";
+    const d = resultado.diferencia;
+    const fila = (t: string, sistema: number, declarado: number, extra?: string) => (
+      <tr><td>{t}{extra ? <span className="block text-[12px] text-rojo">{extra}</span> : null}</td><td className="num">{soles(sistema)}</td><td className="num font-semibold">{soles(declarado)}</td><td className={`num font-semibold ${tonoDif(declarado - sistema)}`}>{conSigno(declarado - sistema)}</td></tr>
+    );
     return (
       <div className="max-w-xl mx-auto">
-        <Tarjeta className="p-7 text-center aparecer">
-          <p className="sello mx-auto">SESIÓN {String(resultado.sesionId).padStart(6, "0")}</p>
-          <h1 className="font-display font-semibold text-2xl mt-4">{ok ? "Caja cerrada" : "Cierre registrado, falta validar"}</h1>
-          <p className="text-ink-2 mt-2">Diferencia entre lo contado y lo esperado</p>
-          <p className={`cifra text-[52px] mt-1 ${Math.abs(resultado.diferencia) > 5 ? "text-rojo" : "text-ok"}`}>{resultado.diferencia > 0 ? "+" : ""}{soles(resultado.diferencia)}</p>
-          {!ok ? <p className="text-sm text-ink-2">La diferencia supera el umbral. Un administrador distinto a ti debe validar el cierre.</p> : null}
+        <Tarjeta className="p-7 aparecer">
+          <div className="text-center">
+            <p className="sello mx-auto">SESIÓN {String(resultado.sesionId).padStart(6, "0")}</p>
+            <h1 className="font-display font-semibold text-2xl mt-4">Caja cerrada</h1>
+            <p className="text-ink-2 mt-2">{Math.abs(d) < 0.005 ? "Lo declarado coincide con el sistema" : d < 0 ? "Faltante respecto a lo registrado en el sistema" : "Sobrante respecto a lo registrado en el sistema"}</p>
+            <p className={`cifra text-[52px] mt-1 ${Math.abs(d) < 0.005 ? "text-ok" : tonoDif(d)}`}>{conSigno(d)}</p>
+          </div>
+          <table className="tabla mt-4">
+            <thead><tr><th /><th className="num">Sistema</th><th className="num">Declarado</th><th className="num">Diferencia</th></tr></thead>
+            <tbody>
+              {fila("Saldo final efectivo", resultado.efectivo.sistema, resultado.efectivo.declarado)}
+              {fila("Saldo final virtual", resultado.virtual.sistema, resultado.virtual.declarado, resultado.virtual.sinConfirmar ? `${resultado.virtual.sinConfirmar} ${resultado.virtual.sinConfirmar === 1 ? "pago sin confirmar" : "pagos sin confirmar"}` : undefined)}
+            </tbody>
+          </table>
           <div className="flex justify-center gap-2 mt-6">
-            {ok ? <Link href={`/caja/reporte/${resultado.sesionId}`}><Boton variante="petroleo">Ver reporte de cierre</Boton></Link> : null}
+            <Link href={`/caja/reporte/${resultado.sesionId}`}><Boton variante="petroleo">Ver reporte de cierre</Boton></Link>
             <Boton variante="borde" onClick={() => setResultado(null)}>Volver</Boton>
           </div>
         </Tarjeta>
@@ -132,64 +136,49 @@ export default function Caja() {
   }
 
   if (!datos.sesion) {
+    const ocupadaPor = datos.caja.ocupadaPor;
     return (
       <div>
-        <Encabezado titulo="Abrir caja" bajada="Cuenta el fondo por denominación; el sistema lo compara con lo que quedó en el último cierre.">{historial}</Encabezado>
-        <div className="grid lg:grid-cols-[320px_minmax(0,1fr)] gap-6 items-start">
-          <div className="space-y-4">
-            <Tarjeta titulo="Caja">
-              <div className="px-5 pb-5 space-y-2">
-                {datos.cajas.map((c) => (
-                  <button key={c.id} disabled={!!c.ocupadaPor} onClick={() => setCajaId(c.id)}
-                    className={`w-full text-left rounded-2xl border px-4 py-3 transition ${elegida?.id === c.id ? "border-petroleo bg-[#f1f8f6] ring-2 ring-petroleo/15" : "border-foil-2 hover:border-foil-3"} disabled:opacity-60`}>
-                    <div className="flex items-center justify-between"><span className="font-semibold">{c.nombre}</span>{c.ocupadaPor ? <Insignia><Lock size={12} /> {c.ocupadaPor}</Insignia> : <Insignia tono="ok">Libre</Insignia>}</div>
-                    <div className="text-[12.5px] text-ink-2 mt-1">Fondo del último cierre: {soles(c.fondoSugerido)}</div>
-                  </button>
-                ))}
-              </div>
-            </Tarjeta>
-            <Tarjeta titulo="Turno">
-              <div className="px-5 pb-5 grid grid-cols-2 gap-2">
-                {TURNOS.map((t) => <button key={t} onClick={() => setTurno(t)} className={`h-10 rounded-xl text-sm font-semibold border ${turno === t ? "bg-petroleo text-white border-petroleo" : "border-foil-3 text-ink-2"}`}>{t[0] + t.slice(1).toLowerCase()}</button>)}
-              </div>
-            </Tarjeta>
+        <Encabezado titulo="Abrir caja" bajada="Elige tu turno y escribe con cuánto efectivo empiezas.">{historial}</Encabezado>
+        <Tarjeta className="max-w-lg p-6">
+          <div className="flex items-center justify-between gap-3">
+            <span className="font-semibold text-[16px]">{datos.caja.nombre}</span>
+            {ocupadaPor ? <Insignia><Lock size={12} /> Abierta por {ocupadaPor}</Insignia> : <Insignia tono="ok">Libre</Insignia>}
           </div>
-          <Tarjeta titulo="Fondo inicial" accion={elegida?.fondoSugerido ? <Boton tam="sm" variante="fantasma" onClick={() => setConteo({ "100": Math.floor(elegida.fondoSugerido / 100), "20": Math.floor((elegida.fondoSugerido % 100) / 20), "10": Math.floor((elegida.fondoSugerido % 20) / 10) })}>Precargar {soles(elegida.fondoSugerido)}</Boton> : null}>
-            <div className="px-5 pb-5">
-              <ContadorEfectivo conteo={conteo} alCambiar={setConteo} />
-              {difiere ? (
-                <div className="mt-4 rounded-2xl bg-ambar-claro p-4">
-                  <p className="text-sm font-semibold text-[#8a5b00]">El fondo no coincide con el último cierre ({soles(elegida!.fondoSugerido)}).</p>
-                  <Entrada className="mt-2" placeholder="Explica la diferencia" value={obs} onChange={(e) => setObs(e.target.value)} />
-                </div>
-              ) : null}
+          {ocupadaPor ? <p className="text-sm text-ink-2 mt-3">{ocupadaPor} tiene la caja abierta. Debe cerrarla antes de que abras tu turno.</p> : (
+            <>
+              <p className="text-[12.5px] font-semibold text-ink-2 mt-5 mb-1.5">Turno</p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {TURNOS.map((t) => <button key={t} onClick={() => setTurno(t)} aria-pressed={turno === t} className={`h-10 rounded-xl text-sm font-semibold border ${turno === t ? "bg-petroleo text-white border-petroleo" : "border-foil-3 text-ink-2"}`}>{t[0] + t.slice(1).toLowerCase()}</button>)}
+              </div>
+              <Campo etiqueta="Efectivo con que empiezas" ayuda="Escribe el total en soles; no hace falta separarlo por billetes y monedas" className="mt-4">
+                <EntradaNumero inputMode="decimal" value={monto} onChange={(e) => setMonto(e.target.value)} placeholder="0.00" onKeyDown={(e) => e.key === "Enter" && abrir()} />
+              </Campo>
               {error ? <p className="text-sm text-rojo mt-3" role="alert">{error}</p> : null}
-              <Boton variante="amor" tam="lg" className="w-full mt-5" cargando={ocupado} disabled={!elegida} onClick={abrir}>Abrir {elegida?.nombre ?? "caja"} con {soles(fondo)}</Boton>
-            </div>
-          </Tarjeta>
-        </div>
+              <Boton variante="amor" tam="lg" className="w-full mt-5" cargando={ocupado} onClick={abrir}>Abrir caja con {soles(Number(monto) || 0)}</Boton>
+            </>
+          )}
+        </Tarjeta>
       </div>
     );
   }
 
   const s = datos.sesion;
   const res = datos.resumen;
-  const esperado = res?.esperado;
-  const contado: Record<Medio, number> = { EFECTIVO: totalDe(conteo), YAPE: Number(virt.YAPE) || 0, PLIN: Number(virt.PLIN) || 0, TARJETA: Number(virt.TARJETA) || 0, TRANSFERENCIA: Number(virt.TRANSFERENCIA) || 0 };
-  const difTotal = esperado ? r2((Object.keys(contado) as Medio[]).reduce((a, m) => a + contado[m] - esperado[m], 0)) : 0;
+  const virtuales = res?.virtuales ?? [];
+  const virtualConfirmado = r2(virtuales.filter((v) => confirmados.has(v.clave)).reduce((a, v) => a + v.monto, 0));
+  const sinConfirmar = virtuales.length - virtuales.filter((v) => confirmados.has(v.clave)).length;
+  const alternar = (clave: string) => setConfirmados((c) => { const n = new Set(c); if (n.has(clave)) n.delete(clave); else n.add(clave); return n; });
+  const todos = virtuales.length > 0 && sinConfirmar === 0;
   const movEfectivo = (tipo: string) => (res?.movimientos ?? []).filter((m) => m.tipo === tipo && m.medio === "EFECTIVO").reduce((a, m) => a + m.monto, 0);
-  const abrirCierre = () => {
-    const e = datos.resumen?.esperado;
-    setVirt({ YAPE: e ? e.YAPE.toFixed(2) : "", PLIN: e ? e.PLIN.toFixed(2) : "", TARJETA: e ? e.TARJETA.toFixed(2) : "", TRANSFERENCIA: e ? e.TRANSFERENCIA.toFixed(2) : "" });
-    setCerrando(true); setConteo({}); setError(null);
-  };
+  const abrirCierre = () => { setCerrando(true); setError(null); setEfectivo(""); setConfirmados(new Set()); };
 
   if (s.estado === "EN_CIERRE") {
     return (
       <div className="max-w-xl mx-auto">
         <Tarjeta className="p-7">
           <h1 className="font-display font-semibold text-2xl">Tu cierre espera validación</h1>
-          <p className="text-ink-2 mt-2">La diferencia del arqueo supera el umbral. Pide a un administrador que ingrese su usuario y clave.</p>
+          <p className="text-ink-2 mt-2">La diferencia del cierre de caja supera el umbral. Pide a un administrador que ingrese su usuario y clave.</p>
           <div className="grid sm:grid-cols-2 gap-3 mt-5">
             <Campo etiqueta="Usuario del administrador"><Entrada value={val.login} onChange={(e) => setVal({ ...val, login: e.target.value })} /></Campo>
             <Campo etiqueta="Clave"><Entrada type="password" value={val.password} onChange={(e) => setVal({ ...val, password: e.target.value })} /></Campo>
@@ -204,41 +193,58 @@ export default function Caja() {
 
   return (
     <div>
-      <Encabezado titulo={`${s.caja} · turno ${s.turno.toLowerCase()}`} bajada={`Abierta ${fechaHora(s.abiertaEn)} con ${soles(s.fondoInicial)} · ${datos.resumen?.tickets ?? 0} tickets emitidos`}>
+      <Encabezado titulo={`${s.caja} · turno ${s.turno.toLowerCase()}`} bajada={`Abierta ${fechaHora(s.abiertaEn)} con ${soles(s.montoApertura)} en efectivo · ${datos.resumen?.tickets ?? 0} tickets emitidos`}>
         {historial}
         <Boton variante="amor" onClick={abrirCierre}>Cerrar caja</Boton>
       </Encabezado>
       {cerrando ? (
         <Tarjeta titulo="Cierre de caja" className="mb-6 aparecer" accion={<Boton tam="sm" variante="fantasma" onClick={() => setCerrando(false)}>Cancelar</Boton>}>
           <div className="px-5 pb-5">
-            <p className="text-sm text-ink-2 mb-4">Cuenta el efectivo por denominación. Yape, Plin, tarjeta y transferencia ya vienen con lo registrado en el sistema: corrígelos solo si tus apps marcan otro monto. Revisa la diferencia antes de confirmar; después ya no se puede cambiar.</p>
-            <div className="grid xl:grid-cols-[minmax(0,1.5fr)_minmax(260px,1fr)] gap-6">
-              <ContadorEfectivo conteo={conteo} alCambiar={setConteo} />
-              <div className="space-y-3">
-                {DIGITALES.map((m) => (
-                  <Campo key={m} etiqueta={NOMBRE_MEDIO[m]} ayuda={esperado ? `Según el sistema: ${soles(esperado[m])}` : undefined}><EntradaNumero inputMode="decimal" placeholder="0.00" value={virt[m]} onChange={(e) => setVirt({ ...virt, [m]: e.target.value.replace(",", ".") })} /></Campo>
-                ))}
-                <Campo etiqueta="Efectivo que queda como fondo" ayuda={`Se retira ${soles(Math.max(0, totalDe(conteo) - (Number(fondoSig) || 0)))}`}><EntradaNumero inputMode="decimal" value={fondoSig} onChange={(e) => setFondoSig(e.target.value)} /></Campo>
-                <Campo etiqueta="Observación (opcional)"><Entrada value={obs} onChange={(e) => setObs(e.target.value)} placeholder={Math.abs(difTotal) > UMBRAL ? "Explica la diferencia" : undefined} /></Campo>
+            <p className="text-sm text-ink-2 mb-4">Escribe el efectivo que tienes en caja y marca cada pago virtual que sí te llegó. El sistema compara con lo registrado y calcula la diferencia.</p>
+            <div className="grid md:grid-cols-[260px_minmax(0,1fr)] gap-5 items-start">
+              <div className="rounded-2xl border border-foil-2 p-4">
+                <p className="text-[12px] font-semibold text-ink-3 uppercase tracking-wide">Paso 1</p>
+                <Campo etiqueta="Efectivo en caja" ayuda="Cuenta todo el efectivo del cajón, incluida la apertura, y escribe el total" className="mt-1">
+                  <EntradaNumero inputMode="decimal" autoFocus value={efectivo} onChange={(e) => setEfectivo(e.target.value)} placeholder="0.00" className="h-12 text-[20px] font-semibold" />
+                </Campo>
+              </div>
+              <div className="rounded-2xl border border-foil-2">
+                <div className="flex flex-wrap items-center justify-between gap-2 px-4 pt-4">
+                  <div>
+                    <p className="text-[12px] font-semibold text-ink-3 uppercase tracking-wide">Paso 2</p>
+                    <p className="font-semibold text-[14px]">Valida los pagos virtuales</p>
+                  </div>
+                  {virtuales.length ? <Boton tam="sm" variante="borde" onClick={() => setConfirmados(todos ? new Set() : new Set(virtuales.map((v) => v.clave)))}>{todos ? "Desmarcar todos" : "Marcar todos como recibidos"}</Boton> : null}
+                </div>
+                {virtuales.length ? (
+                  <div className="max-h-72 overflow-y-auto mt-2">
+                    <table className="tabla">
+                      <thead><tr><th className="w-10"><span className="sr-only">Recibido</span></th><th>Hora</th><th>Comprobante</th><th>Medio</th><th className="num">Monto</th></tr></thead>
+                      <tbody>{virtuales.map((v) => {
+                        const ok = confirmados.has(v.clave);
+                        return (
+                          <tr key={v.clave} onClick={() => alternar(v.clave)} className={`cursor-pointer ${ok ? "" : "text-ink-2"}`}>
+                            <td><input type="checkbox" className="size-4 accent-[var(--color-ok)]" checked={ok} onChange={() => alternar(v.clave)} onClick={(e) => e.stopPropagation()} aria-label={`${v.medio} ${v.referencia} ${soles(v.monto)} recibido`} /></td>
+                            <td className="tabular-nums">{new Date(v.fecha).toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit" })}</td>
+                            <td>{v.referencia}{v.origen === "Ingreso" ? <span className="text-ink-3"> · ingreso</span> : null}</td>
+                            <td>{NOMBRE_MEDIO[v.medio]}</td>
+                            <td className="num font-semibold">{soles(v.monto)}</td>
+                          </tr>
+                        );
+                      })}</tbody>
+                    </table>
+                  </div>
+                ) : <p className="px-4 py-4 text-sm text-ink-3">No hubo pagos virtuales en este turno.</p>}
               </div>
             </div>
-            {esperado ? (
-              <div className="mt-5 overflow-x-auto rounded-2xl border border-foil-2">
-                <table className="tabla">
-                  <thead><tr><th>Medio</th><th className="num">Esperado</th><th className="num">Contado</th><th className="num">Diferencia</th></tr></thead>
-                  <tbody>{(Object.keys(NOMBRE_MEDIO) as Medio[]).map((m) => {
-                    const d = r2(contado[m] - esperado[m]);
-                    return <tr key={m}><td>{NOMBRE_MEDIO[m]}</td><td className="num">{soles(esperado[m])}</td><td className="num">{soles(contado[m])}</td><td className={`num font-semibold ${Math.abs(d) < 0.005 ? "text-ink-3" : d < 0 ? "text-rojo" : "text-ok"}`}>{d > 0 ? "+" : ""}{soles(d)}</td></tr>;
-                  })}</tbody>
-                </table>
-                <div className={`flex flex-wrap items-center justify-between gap-2 px-4 py-3 ${Math.abs(difTotal) > UMBRAL ? "bg-rojo-claro" : "bg-ok-claro"}`}>
-                  <span className="text-sm font-semibold">{Math.abs(difTotal) > UMBRAL ? `La diferencia supera S/ ${UMBRAL.toFixed(2)}: un administrador deberá validar el cierre.` : "La caja cuadra dentro del margen permitido."}</span>
-                  <span className={`cifra text-[24px] ${Math.abs(difTotal) > UMBRAL ? "text-rojo" : "text-ok"}`}>{difTotal > 0 ? "+" : ""}{soles(difTotal)}</span>
-                </div>
-              </div>
-            ) : null}
+            <div className="mt-4 grid sm:grid-cols-2 gap-3">
+              <div className="rounded-2xl bg-foil px-4 py-3"><p className="text-[12.5px] text-ink-2 font-semibold">Saldo final efectivo</p><p className="cifra text-[24px]">{soles(Number(efectivo) || 0)}</p></div>
+              <div className="rounded-2xl bg-foil px-4 py-3"><p className="text-[12.5px] text-ink-2 font-semibold">Saldo final virtual</p><p className="cifra text-[24px]">{soles(virtualConfirmado)}</p>
+                {sinConfirmar ? <p className="text-[12.5px] text-rojo">{sinConfirmar} {sinConfirmar === 1 ? "pago sin confirmar contará" : "pagos sin confirmar contarán"} como faltante</p> : null}</div>
+            </div>
+            <Campo etiqueta="Observación (opcional)" className="mt-4"><Entrada value={obs} onChange={(e) => setObs(e.target.value)} maxLength={250} placeholder="Ej.: un Yape no llegó, se avisó al cliente" /></Campo>
             {error ? <p className="text-sm text-rojo mt-3" role="alert">{error}</p> : null}
-            <Boton variante="amor" tam="lg" className="w-full mt-5" cargando={ocupado} onClick={cerrar}>Confirmar y cerrar caja</Boton>
+            <Boton variante="amor" tam="lg" className="w-full mt-5" cargando={ocupado} disabled={efectivo.trim() === ""} onClick={cerrar}>Confirmar y cerrar caja</Boton>
           </div>
         </Tarjeta>
       ) : null}
@@ -271,7 +277,7 @@ export default function Caja() {
                   <span className="cifra text-[22px]">{soles(res.esperado.EFECTIVO)}</span>
                 </div>
                 <p className="text-[12.5px] text-ink-2 mt-1">
-                  Fondo {soles(s.fondoInicial)} + ventas en efectivo {soles(res.ventas.find((v) => v.medio === "EFECTIVO")?.total ?? 0)}
+                  Apertura {soles(s.montoApertura)} + ventas en efectivo {soles(res.ventas.find((v) => v.medio === "EFECTIVO")?.total ?? 0)}
                   {movEfectivo("INGRESO") ? ` + ingresos ${soles(movEfectivo("INGRESO"))}` : ""}{movEfectivo("EGRESO") ? ` − egresos ${soles(movEfectivo("EGRESO"))}` : ""}
                 </p>
               </div>

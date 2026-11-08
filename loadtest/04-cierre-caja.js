@@ -13,7 +13,7 @@ export default function (d) {
   const t = d.tokens[__VU - 1];
   const e = get(t, "/api/caja", "caja_estado").json();
   if (!e.sesion) return;
-  const r = post(t, "/api/caja/cerrar", { conteo: { "100": 2 }, virtuales: { YAPE: 0, PLIN: 0, TARJETA: 0, TRANSFERENCIA: 0 }, fondoSiguiente: 150, observacion: "Cierre de prueba de carga" }, "cerrar");
+  const r = post(t, "/api/caja/cerrar", { efectivo: 0, confirmados: [], observacion: "Cierre de prueba de carga" }, "cerrar");
   check(r, { "cierre 200": (x) => x.status === 200 });
   if (r.json("estado") === "EN_CIERRE") post(d.admin, "/api/caja/validar", { sesionId: r.json("sesionId"), observacion: "Validado en prueba de carga" }, "validar");
   const rep = get(d.admin, `/api/caja/sesiones/${r.json("sesionId")}`, "reporte_cierre").json();

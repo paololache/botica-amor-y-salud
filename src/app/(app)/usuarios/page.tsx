@@ -1,12 +1,12 @@
 "use client";
 import { useState } from "react";
 import { Plus } from "lucide-react";
-import { api, useDatos, fechaCorta } from "@/lib/cliente";
-import { Boton, Campo, Cargando, Encabezado, Entrada, Insignia, Modal, Tarjeta, Vacio, useAviso } from "@/components/ui";
+import { api, useDatos, fechaCorta, soles } from "@/lib/cliente";
+import { Boton, Campo, Cargando, Encabezado, Entrada, EntradaNumero, Insignia, Modal, Tarjeta, Vacio, useAviso } from "@/components/ui";
 import { useUsuario } from "@/components/shell";
 import { MODULOS, ROLES, ROL_NOMBRE, tieneRol, type Rol } from "@/lib/permisos";
 
-type Usuario = { id: number; nombre: string; login: string; roles: Rol[]; activo: boolean; creadoEn: string };
+type Usuario = { id: number; nombre: string; login: string; roles: Rol[]; activo: boolean; metaDiaria: number | null; creadoEn: string };
 
 export default function Usuarios() {
   const u = useUsuario();
@@ -21,12 +21,13 @@ export default function Usuarios() {
       <Tarjeta>
         {error ? <p className="p-5 text-rojo">{error}</p> : !datos ? <div className="p-5"><Cargando /></div> : datos.length ? (
           <div className="overflow-x-auto"><table className="tabla">
-            <thead><tr><th>Nombre</th><th>Usuario</th><th>Perfiles</th><th>Estado</th><th>Creado</th><th /></tr></thead>
+            <thead><tr><th>Nombre</th><th>Usuario</th><th>Perfiles</th><th className="num">Meta diaria</th><th>Estado</th><th>Creado</th><th /></tr></thead>
             <tbody>{datos.map((x) => (
               <tr key={x.id} className={x.activo ? "" : "opacity-60"}>
                 <td className="font-semibold">{x.nombre}{x.id === u.id ? <span className="ml-2 text-[12px] font-normal text-ink-3">(tú)</span> : null}</td>
                 <td><span className="sello">{x.login}</span></td>
                 <td><div className="flex flex-wrap gap-1">{x.roles.map((r) => <Insignia key={r} tono={r === "ADMIN" ? "amor" : "gris"}>{ROL_NOMBRE[r]}</Insignia>)}</div></td>
+                <td className="num whitespace-nowrap">{x.metaDiaria ? soles(x.metaDiaria) : tieneRol(x.roles, "CAJERO", "VENDEDOR", "QF") ? <span className="text-[12.5px] text-ink-3">Automática</span> : <span className="text-ink-3">—</span>}</td>
                 <td>{x.activo ? <Insignia tono="ok">Activo</Insignia> : <Insignia tono="rojo">Inactivo</Insignia>}</td>
                 <td className="whitespace-nowrap text-ink-2">{fechaCorta(x.creadoEn)}</td>
                 <td className="text-right whitespace-nowrap">
@@ -75,17 +76,21 @@ function FormUsuario({ usuario, propio, alCerrar, alGuardar }: { usuario: Usuari
   const [password, setPassword] = useState("");
   const [roles, setRoles] = useState<Rol[]>(usuario?.roles ?? []);
   const [activo, setActivo] = useState(usuario?.activo ?? true);
+  const [meta, setMeta] = useState(usuario?.metaDiaria ? String(usuario.metaDiaria) : "");
   const [error, setError] = useState<string | null>(null);
   const [ocupado, setOcupado] = useState(false);
   const modulos = MODULOS.filter((m) => !m.oculto && tieneRol(roles, ...m.roles)).map((m) => m.texto);
   const claveValida = usuario ? password === "" || password.length >= 8 : password.length >= 8;
-  const valido = nombre.trim().length >= 3 && login.trim().length >= 3 && roles.length > 0 && claveValida;
+  const metaValida = meta.trim() === "" || Number(meta) > 0;
+  const valido = nombre.trim().length >= 3 && login.trim().length >= 3 && roles.length > 0 && claveValida && metaValida;
+  const metaDiaria = meta.trim() ? Number(meta) : null;
+  const vende = tieneRol(roles, "CAJERO", "VENDEDOR", "QF");
   const alternar = (r: Rol) => setRoles((rs) => (rs.includes(r) ? rs.filter((x) => x !== r) : [...rs, r]));
   const guardar = async () => {
     setOcupado(true); setError(null);
     try {
-      if (usuario) await api(`/api/usuarios/gestion/${usuario.id}`, { metodo: "PUT", cuerpo: { nombre, roles, activo, password: password || undefined } });
-      else await api("/api/usuarios/gestion", { cuerpo: { nombre, login, password, roles } });
+      if (usuario) await api(`/api/usuarios/gestion/${usuario.id}`, { metodo: "PUT", cuerpo: { nombre, roles, activo, password: password || undefined, metaDiaria } });
+      else await api("/api/usuarios/gestion", { cuerpo: { nombre, login, password, roles, metaDiaria } });
       avisar("ok", usuario ? "Usuario actualizado." : `Usuario ${login.trim().toLowerCase()} creado.`);
       alGuardar();
     } catch (e) { setError((e as Error).message); } finally { setOcupado(false); }
@@ -107,6 +112,13 @@ function FormUsuario({ usuario, propio, alCerrar, alGuardar }: { usuario: Usuari
           ))}
         </div>
       </fieldset>
+      {vende ? (
+        <Campo etiqueta="Meta de venta diaria (opcional)" className="mt-4" error={metaValida ? null : "Escribe un monto mayor a 0 o déjalo vacío"}
+          ayuda="Vacía: el sistema la calcula con su promedio de ventas de los últimos 30 días + 10%. Se usa para los mensajes de avance al vender.">
+          <div className="relative max-w-56"><span className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-3 text-sm">S/</span>
+            <EntradaNumero inputMode="decimal" value={meta} placeholder="Automática" onChange={(e) => setMeta(e.target.value.replace(",", "."))} className="pl-8" /></div>
+        </Campo>
+      ) : null}
       <p className="text-[13px] text-ink-2 mt-3">{modulos.length ? <><b>Tendrá acceso a:</b> {modulos.join(", ")}.</> : "Elige al menos un perfil."}</p>
       {usuario ? (
         <label className="flex items-center gap-2.5 text-sm mt-4">

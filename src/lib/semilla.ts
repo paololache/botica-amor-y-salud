@@ -71,7 +71,7 @@ export async function sembrar(db: Db, opciones: { reset?: boolean } = {}): Promi
   const [{ n }] = await db.select({ n: sql<number>`count(*)`.mapWith(Number) }).from(schema.usuario);
   if (n > 0) {
     if (!opciones.reset) return "La base ya tiene datos. Usa SEED_RESET=1 para reiniciarla.";
-    await db.execute(sql`truncate table auditoria, reporte_guardado, metrica, parametro, alerta, liquidacion_mensual, comision_diaria, comision, complemento, campana, kardex, mov_detalle, movimiento_inventario, motivo, compra_detalle, compra, proveedor, venta_pago, venta_detalle, venta, correlativo, cliente, movimiento_caja, sesion_caja, caja, lote, presentacion, producto, laboratorio, categoria, usuario restart identity cascade`);
+    await db.execute(sql`truncate table meta_mensual, uso_modulo, transferencia_detalle, transferencia, auditoria, reporte_guardado, metrica, parametro, alerta, liquidacion_mensual, comision_diaria, comision, complemento, campana, kardex, mov_detalle, movimiento_inventario, motivo, compra_detalle, compra, proveedor, venta_pago, venta_detalle, venta, correlativo, cliente, movimiento_caja, sesion_caja, caja, lote, presentacion, producto, laboratorio, categoria, usuario restart identity cascade`);
   }
   const t0 = Date.now();
   const hoy = hoyLima();

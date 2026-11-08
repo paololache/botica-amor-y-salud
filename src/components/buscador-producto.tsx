@@ -5,7 +5,7 @@ import { api, soles } from "@/lib/cliente";
 
 export type ProdBusqueda = { id: number; codigo: string; nombre: string; principioActivo: string | null; laboratorio: string | null; stockVigente: number; stock: number; presentaciones: { id: number; nombre: string; factor: number; pvp: number }[]; presentacionEscaneadaId?: number };
 
-export function BuscadorProducto({ alElegir, placeholder = "Buscar producto por nombre o código", autoFocus }: { alElegir: (p: ProdBusqueda) => void; placeholder?: string; autoFocus?: boolean }) {
+export function BuscadorProducto({ alElegir, placeholder = "Buscar producto por nombre o código", autoFocus, sinPrecio }: { alElegir: (p: ProdBusqueda) => void; placeholder?: string; autoFocus?: boolean; sinPrecio?: boolean }) {
   const [q, setQ] = useState("");
   const [res, setRes] = useState<ProdBusqueda[]>([]);
   const [i, setI] = useState(0);
@@ -32,7 +32,7 @@ export function BuscadorProducto({ alElegir, placeholder = "Buscar producto por 
             <li key={p.id}>
               <button type="button" onMouseEnter={() => setI(k)} onClick={() => elegir(p)} className={`w-full text-left px-3 py-2 flex justify-between gap-3 ${k === i ? "bg-foil/70" : ""}`}>
                 <span><span className="font-semibold text-[14px]">{p.nombre}</span><span className="block text-[12px] text-ink-3">{[p.laboratorio, p.codigo, p.principioActivo].filter(Boolean).join(" · ")}</span></span>
-                <span className="text-[12.5px] text-ink-2 text-right">{p.stock} und.<span className="block">{soles(p.presentaciones[0]?.pvp)}</span></span>
+                <span className="text-[12.5px] text-ink-2 text-right">{p.stock} und.{sinPrecio ? null : <span className="block">{soles(p.presentaciones[0]?.pvp)}</span>}</span>
               </button>
             </li>
           ))}

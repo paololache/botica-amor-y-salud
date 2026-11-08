@@ -39,13 +39,13 @@ const baseInput = "h-10 rounded-xl border border-foil-3 bg-papel px-3 text-[14.5
 export function Entrada({ className = "", ...p }: InputHTMLAttributes<HTMLInputElement>) {
   return <input {...p} className={`${baseInput} ${/(^|\s)w-/.test(className) ? "" : "w-full"} ${className}`} />;
 }
-/** Campo numérico: según `inputMode` admite enteros ("numeric") o decimales; descarta lo demás y avisa. `crudo` es para celdas de tabla con estilo propio. */
+/** Campo numérico: según `inputMode` admite enteros ("numeric") o decimales; descarta lo demás y avisa. El aviso se quita con la siguiente tecla válida, no al salir del campo, para no mover el botón que se está pulsando. `crudo` es para celdas de tabla con estilo propio. */
 export function EntradaNumero({ crudo, className = "", onChange, onBlur, ...p }: InputHTMLAttributes<HTMLInputElement> & { crudo?: boolean }) {
   const [rechazado, setRechazado] = useState(false);
   const entero = p.inputMode === "numeric";
   const campo = (
     <input {...p} className={crudo ? className : `${baseInput} ${/(^|\s)w-/.test(className) ? "" : "w-full"} ${className}`} aria-invalid={rechazado}
-      onBlur={(e) => { setRechazado(false); onBlur?.(e); }}
+      onBlur={onBlur}
       onChange={(e) => {
         const escrito = e.target.value;
         const limpio = limpiarNumero(escrito, entero);

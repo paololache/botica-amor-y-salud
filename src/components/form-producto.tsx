@@ -84,7 +84,6 @@ export function FormProducto({ producto: p, categorias, laboratorios, alCerrar, 
           <Campo etiqueta="Registro sanitario (opcional)"><Entrada value={f.registroSanitario} onChange={(e) => cambiar("registroSanitario", e.target.value)} placeholder="EE-01234" /></Campo>
           <Campo etiqueta="Vencimiento del registro (opcional)"><Entrada type="date" value={f.registroVence} onChange={(e) => cambiar("registroVence", e.target.value)} /></Campo>
           <Campo etiqueta="Categoría (opcional)"><Selector value={f.categoriaId} onChange={(e) => cambiar("categoriaId", e.target.value)}><option value="">Sin categoría</option>{categorias.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}</Selector></Campo>
-          <Campo etiqueta="Condición de venta"><Selector value={f.condicionVenta} onChange={(e) => cambiar("condicionVenta", e.target.value)}><option value="LIBRE">Venta libre</option><option value="RECETA">Con receta</option><option value="RECETA_RETENIDA">Receta retenida</option></Selector></Campo>
           <Campo etiqueta="Stock mínimo (unidades)"><EntradaNumero inputMode="numeric" value={f.stockMinimo} onChange={(e) => cambiar("stockMinimo", e.target.value.replace(/\D/g, ""))} /></Campo>
         </div>
         <fieldset className="rounded-2xl border border-foil-2 p-4">

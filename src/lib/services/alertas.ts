@@ -6,12 +6,13 @@ import { tieneRol, type Rol } from "../permisos";
 import { filas } from "../sqlrows";
 import { diasEntre, ErrorNegocio, hoy as hoyLima, sumarDias } from "../util";
 import { parametros } from "./parametros";
+import { campanasVigentes } from "./campanas";
 
 const { alerta, lote, motivo, movimientoInventario, movDetalle, auditoria } = schema;
 
 export type TipoAlerta =
   | "AGOTADO" | "POR_TERMINARSE" | "BAJO_MINIMO" | "POR_VENCER" | "VENCIDO" | "SIN_ROTACION"
-  | "DIF_CAJA" | "CAJA_ABIERTA" | "CPE_PENDIENTE" | "CAMPANA_POR_VENCER" | "SALIDA_PENDIENTE";
+  | "DIF_CAJA" | "CAJA_ABIERTA" | "CPE_PENDIENTE" | "CAMPANA_POR_VENCER" | "CAMPANA_ACTIVA" | "SALIDA_PENDIENTE" | "TRANSFERENCIA_PENDIENTE";
 
 export const TIPOS: Record<TipoAlerta, { nombre: string; roles: Rol[]; grupo: "stock" | "vencimiento" | "caja" | "gestion" }> = {
   AGOTADO: { nombre: "Agotados", roles: ["ADMIN", "INVENTARIADOR"], grupo: "stock" },
@@ -24,7 +25,10 @@ export const TIPOS: Record<TipoAlerta, { nombre: string; roles: Rol[]; grupo: "s
   CAJA_ABIERTA: { nombre: "Cajas sin cerrar", roles: ["ADMIN"], grupo: "caja" },
   CPE_PENDIENTE: { nombre: "CPE pendientes", roles: ["ADMIN"], grupo: "caja" },
   CAMPANA_POR_VENCER: { nombre: "Campañas por vencer", roles: ["ADMIN"], grupo: "gestion" },
+  // Para quienes venden y comisionan: los productos que conviene ofrecer hoy.
+  CAMPANA_ACTIVA: { nombre: "Productos en campaña", roles: ["CAJERO", "VENDEDOR", "QF"], grupo: "gestion" },
   SALIDA_PENDIENTE: { nombre: "Salidas por aprobar", roles: ["ADMIN", "QF"], grupo: "gestion" },
+  TRANSFERENCIA_PENDIENTE: { nombre: "Transferencias por aprobar", roles: ["ADMIN"], grupo: "gestion" },
 };
 
 type Nueva = { clave: string; tipo: TipoAlerta; severidad: "CRITICA" | "ALTA" | "INFO"; titulo: string; detalle: string; referenciaTipo?: string; referenciaId?: number; valor?: number };
@@ -56,7 +60,7 @@ async function calcularAlertas(db: Db) {
         sum(case when v.fecha >= now() - interval '30 days' then vd.unidades else 0 end) v30,
         sum(vd.unidades) v90
       from venta_detalle vd join venta v on v.id = vd.venta_id
-      where v.estado = 'EMITIDA' and v.fecha >= now() - interval '90 days'
+      where v.estado = 'EMITIDA' and v.canal = 'MOSTRADOR' and v.fecha >= now() - interval '90 days'
       group by vd.producto_id
     ) v on v.producto_id = p.id
     where p.activo = true`);
@@ -98,8 +102,18 @@ async function calcularAlertas(db: Db) {
     select id, nombre, fin::text as fin from campana where estado in ('ACTIVA','PROGRAMADA') and fin >= ${hoy} and fin <= ${sumarDias(hoy, p.aviso_campana_dias)}`);
   for (const c of camps) nuevas.push({ clave: `CAMP:c:${c.id}`, tipo: "CAMPANA_POR_VENCER", severidad: "INFO", titulo: c.nombre, detalle: `Termina el ${String(c.fin).slice(0, 10)}`, referenciaTipo: "campana", referenciaId: c.id });
 
+  for (const c of await campanasVigentes(db, hoy)) {
+    const partes = [`Comisiona ${c.porcentaje}%`];
+    if (c.precio) partes.push(`${c.precio.presentacion} a S/ ${c.precio.campana.toFixed(2)} (antes S/ ${c.precio.lista.toFixed(2)})`);
+    partes.push(`${c.vigente} und.`, `hasta el ${c.fin.slice(8, 10)}/${c.fin.slice(5, 7)}`);
+    nuevas.push({ clave: `CAMPACT:c:${c.campanaId}`, tipo: "CAMPANA_ACTIVA", severidad: "INFO", titulo: c.producto, detalle: partes.join(" · "), referenciaTipo: "producto", referenciaId: c.productoId, valor: c.porcentaje });
+  }
+
   const sal = await filas<{ id: number; descripcion: string }>(db, sql`select id, descripcion from movimiento_inventario where estado = 'PENDIENTE'`);
   for (const s of sal) nuevas.push({ clave: `SAL:m:${s.id}`, tipo: "SALIDA_PENDIENTE", severidad: "INFO", titulo: `Movimiento MOV-${String(s.id).padStart(5, "0")}`, detalle: s.descripcion, referenciaTipo: "movimiento", referenciaId: s.id });
+
+  const trs = await filas<{ id: number; serie: string; numero: number; destino: string }>(db, sql`select id, serie, numero, destino from transferencia where estado = 'PENDIENTE'`);
+  for (const t of trs) nuevas.push({ clave: `TRF:t:${t.id}`, tipo: "TRANSFERENCIA_PENDIENTE", severidad: "INFO", titulo: `${t.serie}-${String(t.numero).padStart(8, "0")}`, detalle: `A ${t.destino} · falta el precio de venta`, referenciaTipo: "transferencia", referenciaId: t.id });
 
   const existentes = await db.select().from(alerta).where(ne(alerta.estado, "CERRADA"));
   const porClave = new Map(existentes.map((e) => [e.clave, e]));

@@ -23,12 +23,14 @@ export const MODULOS: { href: string; texto: string; roles: Rol[]; oculto?: bool
   { href: "/productos", texto: "Productos", roles: TODOS },
   { href: "/compras", texto: "Compras", roles: ["ADMIN", "INVENTARIADOR"] },
   { href: "/movimientos", texto: "Salidas y entradas", roles: ["ADMIN", "QF", "INVENTARIADOR"] },
+  { href: "/transferencias", texto: "Transferencias", roles: ["ADMIN", "QF", "CAJERO", "INVENTARIADOR"] },
   { href: "/laboratorios", texto: "Laboratorios", roles: ["ADMIN"] },
   { href: "/kardex", texto: "Kardex", roles: ["ADMIN", "QF", "INVENTARIADOR", "CONTADOR"] },
   { href: "/campanas", texto: "Campañas", roles: ["ADMIN"] },
   { href: "/complementos", texto: "Complementos", roles: ["ADMIN", "QF"] },
   { href: "/comisiones", texto: "Comisiones", roles: ["ADMIN", "QF", "CAJERO", "VENDEDOR", "CONTADOR"] },
   { href: "/reportes", texto: "Reportes", roles: ["ADMIN", "QF", "INVENTARIADOR", "CONTADOR"] },
+  { href: "/metas", texto: "Metas de venta", roles: ["ADMIN"] },
   { href: "/usuarios", texto: "Usuarios", roles: ["ADMIN"] },
 ];
 
@@ -60,6 +62,9 @@ export const PERMISOS = {
   reportes: ["ADMIN", "QF", "CONTADOR", "INVENTARIADOR"],
   "metricas.crear": ["ADMIN"],
   "usuarios.gestionar": ["ADMIN"],
+  "metas.gestionar": ["ADMIN"],
+  "transferencias.registrar": ["ADMIN", "QF", "CAJERO", "INVENTARIADOR"],
+  "transferencias.aprobar": ["ADMIN"],
 } satisfies Record<string, Rol[]>;
 
 export type Permiso = keyof typeof PERMISOS;

@@ -1,11 +1,13 @@
 "use client";
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { ArrowRight, Wallet } from "lucide-react";
+import { Wallet } from "lucide-react";
 import { api, useDatos, soles, numero, fechaHora } from "@/lib/cliente";
 import { Blister, type Conteo } from "@/components/blister";
 import { Boton, Cargando, Insignia, Modal, Entrada, Tarjeta, Vacio, useAviso } from "@/components/ui";
-import { useUsuario } from "@/components/shell";
+import { ICONOS, useUsuario } from "@/components/shell";
+import { BarraCuotaMes, BarraMeta } from "@/components/meta-dia";
+import type { AvanceMes, MetaDia } from "@/lib/services/metas";
 import { HistoricoVentas } from "@/components/historico-ventas";
 import { puede, tieneRol } from "@/lib/permisos";
 
@@ -17,6 +19,9 @@ type Panel = {
   caja: { sesion: { id: number; caja: string; turno: string; abiertaEn: string; estado: string } | null; resumen: { tickets: number } | null } | null;
   comisiones: { hoy: number; mes: number; lineasHoy: number } | null;
   tarjetas: { codigo: string; nombre: string; unidad: string; valor: number | null }[];
+  accesos: { href: string; texto: string; visitas: number }[];
+  meta: MetaDia | null;
+  cuota: (AvanceMes & { deBotica: boolean }) | null;
 };
 
 const ACCIONES: Record<string, { texto: string; accion?: string; enlace?: (a: Alerta) => string }[]> = {
@@ -29,7 +34,9 @@ const ACCIONES: Record<string, { texto: string; accion?: string; enlace?: (a: Al
   CAJA_ABIERTA: [{ texto: "Revisado", accion: "REVISADO" }],
   CPE_PENDIENTE: [{ texto: "Ver ventas", enlace: () => "/ventas" }],
   CAMPANA_POR_VENCER: [{ texto: "Ver campañas", enlace: () => "/campanas" }],
+  CAMPANA_ACTIVA: [{ texto: "Vender", enlace: (a) => `/vender?q=${encodeURIComponent(a.titulo)}` }],
   SALIDA_PENDIENTE: [{ texto: "Revisar", enlace: () => "/movimientos" }],
+  TRANSFERENCIA_PENDIENTE: [{ texto: "Aprobar", enlace: () => "/transferencias" }],
   SIN_ROTACION: [{ texto: "Revisado", accion: "REVISADO" }],
 };
 
@@ -48,6 +55,7 @@ export default function PanelPrincipal() {
   const [motivo, setMotivo] = useState("");
   const [busqueda, setBusqueda] = useState("");
   const conteos = datos?.alertas.conteos ?? [];
+  const hayAlertas = conteos.some((c) => c.total > 0);
   // Si se atendió la última alerta del tipo, su tarjeta queda deshabilitada: se vuelve a ver todo.
   const tipoActivo = conteos.some((c) => c.tipo === tipo && c.total > 0) ? tipo : null;
   const total = conteos.filter((c) => !tipoActivo || c.tipo === tipoActivo).reduce((s, c) => s + c.total, 0);
@@ -71,20 +79,32 @@ export default function PanelPrincipal() {
 
   return (
     <div>
-      <div className="flex flex-wrap items-end justify-between gap-4 mb-7">
+      <div className="flex flex-wrap items-end justify-between gap-4 mb-5">
         <div>
           <p className="text-ink-3 text-sm first-letter:uppercase">{new Intl.DateTimeFormat("es-PE", { timeZone: "America/Lima", weekday: "long", day: "numeric", month: "long" }).format(new Date())}</p>
           <h1 className="font-display font-semibold text-[28px] md:text-[34px] leading-tight mt-1">{saludo()}, {nombre}</h1>
         </div>
-        {tieneRol(u.roles, "ADMIN", "CAJERO", "VENDEDOR", "QF") ? (
-          <Link href="/vender"><Boton variante="amor" tam="lg">Ir a vender <ArrowRight size={18} /></Boton></Link>
-        ) : null}
       </div>
+
+      {datos?.accesos.length ? (
+        <nav aria-label="Accesos rápidos" className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-7">
+          {datos.accesos.map((a, i) => {
+            const I = ICONOS[a.href];
+            return (
+              <Link key={a.href} href={a.href}
+                className={`flex items-center gap-3 h-16 px-4 rounded-2xl font-semibold text-[15px] transition active:translate-y-px ${i === 0 ? "bg-amor text-white hover:bg-amor-2 shadow-[0_8px_18px_-10px_rgba(226,69,122,.9)]" : "bg-papel border border-foil-3 text-ink hover:border-vino-2"}`}>
+                {I ? <I size={22} className={i === 0 ? "" : "text-amor"} aria-hidden /> : null}
+                <span className="truncate">{a.texto}</span>
+              </Link>
+            );
+          })}
+        </nav>
+      ) : cargando ? <div className="mb-7"><Cargando alto="h-16" /></div> : null}
 
       {error ? <p className="text-rojo">{error}</p> : null}
       <div className="grid xl:grid-cols-[minmax(0,1.65fr)_minmax(320px,1fr)] gap-6">
         <div className="space-y-6 min-w-0">
-          {datos?.alertas.conteos.length ? (
+          {hayAlertas ? (
             <section aria-labelledby="t-alertas">
               <div className="flex items-baseline justify-between mb-3">
                 <h2 id="t-alertas" className="font-display font-semibold text-[17px]">Lo que necesita atención</h2>
@@ -94,7 +114,7 @@ export default function PanelPrincipal() {
             </section>
           ) : cargando ? <Cargando alto="h-72" /> : null}
 
-          {datos?.alertas.conteos.length ? (
+          {hayAlertas ? (
             <Tarjeta titulo={tipoActivo ? conteos.find((c) => c.tipo === tipoActivo)?.nombre : "Todas las alertas"} accion={<span className="text-[12.5px] text-ink-3">{total} {total === 1 ? "alerta" : "alertas"}</span>}>
               {lista.error ? <p className="px-5 pb-5 text-sm text-rojo">{lista.error}</p> : null}
               {esStock ? <div className="px-5 pb-3"><Entrada aria-label="Buscar por código o nombre" placeholder="Buscar por código o nombre de producto" value={busqueda} onChange={(e) => { setBusqueda(e.target.value); setTodas(false); }} /></div> : null}
@@ -111,7 +131,7 @@ export default function PanelPrincipal() {
                         {(ACCIONES[a.tipo] ?? []).map((ac) => ac.enlace
                           ? <Link key={ac.texto} href={ac.enlace(a)}><Boton tam="sm" variante="borde">{ac.texto}</Boton></Link>
                           : <Boton key={ac.texto} tam="sm" variante="borde" onClick={() => atender(a, ac.accion!)}>{ac.texto}</Boton>)}
-                        <Boton tam="sm" variante="fantasma" onClick={() => { setPosponer(a); setMotivo(""); }}>Posponer</Boton>
+                        {a.tipo !== "CAMPANA_ACTIVA" ? <Boton tam="sm" variante="fantasma" onClick={() => { setPosponer(a); setMotivo(""); }}>Posponer</Boton> : null}
                       </div>
                     </li>
                   ))}
@@ -139,6 +159,8 @@ export default function PanelPrincipal() {
                 <span>{numero(datos.ventas.dia.tickets)} tickets</span>
                 {variacion !== null ? <Insignia tono={variacion >= 0 ? "ok" : "ambar"}>{variacion >= 0 ? "+" : ""}{variacion.toFixed(0)}% vs. ayer</Insignia> : null}
               </div>
+              {datos.meta?.objetivo ? <div className="mt-4"><BarraMeta meta={datos.meta} /></div> : null}
+              {datos.cuota ? <div className="mt-4"><BarraCuotaMes cuota={datos.cuota} titulo={datos.cuota.deBotica ? "Cuota del mes de la botica" : "Tu cuota del mes"} /></div> : null}
               <div className="mt-5 pt-4 border-t border-foil flex justify-between text-[13.5px]">
                 <span className="text-ink-2">En el mes</span><span className="font-semibold">{soles(datos.ventas.mes.total)}</span>
               </div>

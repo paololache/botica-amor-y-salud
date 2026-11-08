@@ -1,0 +1,1 @@
+ALTER TABLE "usuario" ADD COLUMN "meta_diaria" numeric(12, 2);

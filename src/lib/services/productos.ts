@@ -4,7 +4,8 @@ import { fecha, monto, montoOCero } from "../validacion";
 import { schema, type Db } from "@/db";
 import type { Sesion } from "../auth";
 import { ErrorNegocio, hoy as hoyLima, r2, r4, sumarDias } from "../util";
-import { estadoEfectivo } from "./campanas";
+import { filas } from "../sqlrows";
+import { estadoEfectivo, preciosCampana } from "./campanas";
 import { catalogoLaboratorios } from "./laboratorios";
 
 const { producto, presentacion, laboratorio, lote, categoria, campana, complemento, kardex, auditoria } = schema;
@@ -49,6 +50,7 @@ async function enriquecer(db: Db, prods: (typeof producto.$inferSelect)[], hoy: 
   const pres = ids.length ? await db.select().from(presentacion).where(and(inArray(presentacion.productoId, ids), eq(presentacion.activo, true))).orderBy(asc(presentacion.factor)) : [];
   const st = await stockYVencimiento(db, ids, hoy);
   const camps = await campanasDe(db, ids, hoy);
+  const enCampana = await preciosCampana(db, ids, hoy);
   const labIds = [...new Set(prods.map((p) => p.laboratorioId).filter((id): id is number => id !== null))];
   const labs = new Map((labIds.length ? await db.select().from(laboratorio).where(inArray(laboratorio.id, labIds)) : []).map((l) => [l.id, l.nombre]));
   return prods.map((p) => {
@@ -59,7 +61,7 @@ async function enriquecer(db: Db, prods: (typeof producto.$inferSelect)[], hoy: 
       condicionVenta: p.condicionVenta, ubicacion: p.ubicacion, stockMinimo: p.stockMinimo, costoPromedio: p.costoPromedio, porcentajeUtilidad: p.porcentajeUtilidad,
       stock: st.get(p.id)?.stock ?? 0, stockVigente: st.get(p.id)?.vigente ?? 0, proximoVencimiento: st.get(p.id)?.proxVenc ?? null,
       enPromocion: c?.estado === "ACTIVA", campana: c ?? null,
-      presentaciones: pres.filter((x) => x.productoId === p.id).map((x) => ({ id: x.id, nombre: x.nombre, factor: x.factor, pvp: x.pvp, codigo: x.codigo })),
+      presentaciones: pres.filter((x) => x.productoId === p.id).map((x) => ({ id: x.id, nombre: x.nombre, factor: x.factor, pvp: x.pvp, codigo: x.codigo, pvpCampana: enCampana.get(x.id) ?? null })),
     };
   });
 }
@@ -92,7 +94,8 @@ export async function fichaProducto(db: Db, id: number) {
   if (!p) return null;
   const [e] = await enriquecer(db, [p], hoy);
   const lotes = await db.select().from(lote).where(eq(lote.productoId, id)).orderBy(asc(lote.vencimiento));
-  return { ...e, categoriaId: p.categoriaId, tieneKardex: await tieneMovimientos(db, id), lotes: lotes.map((l) => ({ id: l.id, numero: l.numero, vencimiento: l.vencimiento, cantidad: l.cantidad, estado: l.estado, costoUnitario: l.costoUnitario })) };
+  const [cat] = p.categoriaId ? await db.select().from(categoria).where(eq(categoria.id, p.categoriaId)) : [];
+  return { ...e, categoriaId: p.categoriaId, categoria: cat?.nombre ?? null, tieneKardex: await tieneMovimientos(db, id), lotes: lotes.map((l) => ({ id: l.id, numero: l.numero, vencimiento: l.vencimiento, cantidad: l.cantidad, estado: l.estado, costoUnitario: l.costoUnitario })) };
 }
 
 async function tieneMovimientos(db: Db, id: number) {
@@ -200,6 +203,26 @@ export async function editarProducto(db: Db, user: Sesion, id: number, d: Entrad
     await tx.insert(auditoria).values({ usuarioId: user.id, accion: "EDITAR_PRODUCTO", entidad: "producto", entidadId: id, detalle: { antes: { codigo: p.codigo, nombre: p.nombre, costoPromedio: p.costoPromedio }, despues: { codigo: d.codigo, nombre: d.nombre, costoPromedio }, precios: nuevas } });
   });
   return { id };
+}
+
+/** Más vendidos en mostrador (por cantidad de tickets en que aparecen), con stock vigente, para agregarlos al carrito de un toque. */
+export async function masVendidos(db: Db, limite = 12, dias = 30) {
+  const hoy = hoyLima();
+  const ranking = (d: number) => filas<{ producto_id: number; tickets: string; unidades: string }>(db, sql`
+    select d.producto_id, count(distinct d.venta_id) as tickets, sum(d.unidades) as unidades
+    from venta_detalle d join venta v on v.id = d.venta_id join producto p on p.id = d.producto_id
+    where v.estado = 'EMITIDA' and v.canal = 'MOSTRADOR' and p.activo = true and v.fecha >= ${sumarDias(hoy, -d)}::date
+    group by d.producto_id order by 2 desc, 3 desc limit ${limite * 2}`);
+  let top = await ranking(dias);
+  if (!top.length) top = await ranking(365);
+  if (!top.length) return [];
+  const orden = new Map(top.map((f, i) => [Number(f.producto_id), { i, tickets: Number(f.tickets) }]));
+  const prods = await db.select().from(producto).where(inArray(producto.id, [...orden.keys()]));
+  return (await enriquecer(db, prods, hoy))
+    .filter((p) => p.stockVigente > 0 && p.presentaciones.length)
+    .map((p) => ({ ...p, tickets: orden.get(p.id)!.tickets }))
+    .sort((a, b) => orden.get(a.id)!.i - orden.get(b.id)!.i)
+    .slice(0, limite);
 }
 
 /** Complementos con stock para lo que hay en el carrito; primero los que están en campaña activa. */

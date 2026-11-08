@@ -1,26 +1,27 @@
 "use client";
 import {
-  ArrowDownToLine, CalendarClock, CalendarX2, ClipboardCheck, FileClock, Hourglass, LockOpen, Megaphone, PackageX, Scale, TrendingDown, type LucideIcon,
+  ArrowDownToLine, BadgePercent, CalendarClock, CalendarX2, ClipboardCheck, FileClock, Send, Hourglass, LockOpen, Megaphone, PackageX, Scale, TrendingDown, type LucideIcon,
 } from "lucide-react";
 
 export type Conteo = { tipo: string; nombre: string; total: number; criticas: number; grupo: string };
 
 const ICONOS: Record<string, LucideIcon> = {
   AGOTADO: PackageX, VENCIDO: CalendarX2, POR_VENCER: CalendarClock, POR_TERMINARSE: TrendingDown, BAJO_MINIMO: ArrowDownToLine,
-  DIF_CAJA: Scale, CAJA_ABIERTA: LockOpen, CPE_PENDIENTE: FileClock, SALIDA_PENDIENTE: ClipboardCheck, CAMPANA_POR_VENCER: Megaphone, SIN_ROTACION: Hourglass,
+  DIF_CAJA: Scale, CAJA_ABIERTA: LockOpen, CPE_PENDIENTE: FileClock, SALIDA_PENDIENTE: ClipboardCheck, TRANSFERENCIA_PENDIENTE: Send, CAMPANA_POR_VENCER: Megaphone, CAMPANA_ACTIVA: BadgePercent, SIN_ROTACION: Hourglass,
 };
 
 /** Resumen de alertas: una tarjeta por tipo con su cantidad; el color indica la severidad más alta. */
 export function Blister({ conteos, seleccion, alElegir }: { conteos: Conteo[]; seleccion: string | null; alElegir: (tipo: string | null) => void }) {
-  const orden = ["AGOTADO", "VENCIDO", "POR_VENCER", "POR_TERMINARSE", "DIF_CAJA", "CPE_PENDIENTE", "BAJO_MINIMO", "CAJA_ABIERTA", "SALIDA_PENDIENTE", "CAMPANA_POR_VENCER", "SIN_ROTACION"];
-  const lista = [...conteos].sort((a, b) => orden.indexOf(a.tipo) - orden.indexOf(b.tipo));
+  const orden = ["AGOTADO", "VENCIDO", "POR_VENCER", "POR_TERMINARSE", "DIF_CAJA", "CPE_PENDIENTE", "BAJO_MINIMO", "CAJA_ABIERTA", "SALIDA_PENDIENTE", "TRANSFERENCIA_PENDIENTE", "CAMPANA_ACTIVA", "CAMPANA_POR_VENCER", "SIN_ROTACION"];
+  // Solo se muestra lo que necesita atención: los tipos en cero no aparecen.
+  const lista = conteos.filter((c) => c.total > 0).sort((a, b) => orden.indexOf(a.tipo) - orden.indexOf(b.tipo));
   const pendientes = lista.reduce((s, c) => s + c.total, 0);
   return (
     <div className="alertas-panel">
       <div className="alertas">
         {lista.map((c, i) => {
           const vacio = c.total === 0;
-          const sev = c.criticas > 0 ? "CRITICA" : c.tipo === "SIN_ROTACION" || c.tipo === "CAMPANA_POR_VENCER" || c.tipo === "SALIDA_PENDIENTE" ? "INFO" : "ALTA";
+          const sev = c.criticas > 0 ? "CRITICA" : c.tipo === "SIN_ROTACION" || c.tipo === "CAMPANA_POR_VENCER" || c.tipo === "CAMPANA_ACTIVA" || c.tipo === "SALIDA_PENDIENTE" || c.tipo === "TRANSFERENCIA_PENDIENTE" ? "INFO" : "ALTA";
           const Icono = ICONOS[c.tipo] ?? ClipboardCheck;
           return (
             <button key={c.tipo} type="button" className="alerta" style={{ ["--i" as string]: i }} data-vacio={vacio ? "1" : "0"} data-sev={vacio ? undefined : sev}

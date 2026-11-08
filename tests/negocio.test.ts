@@ -1,35 +1,40 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { PGlite } from "@electric-sql/pglite";
 import { beforeAll, describe, expect, it } from "vitest";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { schema, type Db } from "@/db";
-import { abrirCaja, cerrarCaja, calcularEsperado, validarCierre } from "@/lib/services/caja";
+import { abrirCaja, cerrarCaja, calcularEsperado, esquemaApertura, esquemaCierre, listarSesiones, pagosVirtuales, reporteCierre, validarCierre } from "@/lib/services/caja";
 import { crearVenta, anularVenta } from "@/lib/services/ventas";
-import { crearCampana, alternarCampana } from "@/lib/services/campanas";
+import { crearCampana, alternarCampana, campanasVigentes, recordatorioCampanas } from "@/lib/services/campanas";
 import { consolidarHasta, misComisiones, cerrarMes, detalleVendedor, resumenMes } from "@/lib/services/comisiones";
 import { registrarRecepcion, anularCompra, costearCompra, corregirCostoCompra, datosCorreccion, esquemaCorreccion, esquemaRecepcion, listarCompras } from "@/lib/services/compras";
-import { registrarMovimiento, decidirMovimiento } from "@/lib/services/salidas";
+import { registrarMovimiento, decidirMovimiento, listarMovimientos } from "@/lib/services/salidas";
 import { evaluarAlertas, alertasDelRol } from "@/lib/services/alertas";
 import { ejecutarReporte, crearMetrica, reporteEspecial } from "@/lib/services/reportes";
-import { buscarProductos, crearProducto, editarProducto, esquemaProducto, fichaProducto, listarStock } from "@/lib/services/productos";
+import { buscarProductos, crearProducto, editarProducto, esquemaProducto, fichaProducto, listarStock, masVendidos } from "@/lib/services/productos";
 import { crearLaboratorio, eliminarLaboratorio, listarLaboratorios, renombrarLaboratorio, unificarLaboratorios } from "@/lib/services/laboratorios";
 import bcrypt from "bcryptjs";
 import { enmascarar, MODULOS, moduloDeRuta, puede, tieneRol, verCostos, type Rol } from "@/lib/permisos";
 import { firmarSesion, leerSesion } from "@/lib/auth";
 import { crearUsuario, editarUsuario, eliminarUsuario, esquemaNuevoUsuario } from "@/lib/services/usuarios";
 import { esquemaHistorico, historicoVentas, panel } from "@/lib/services/panel";
+import { accesosFrecuentes, registrarUso } from "@/lib/services/accesos";
+import { filas } from "@/lib/sqlrows";
+import { avanceDelMes, cumplimientoCuotas, esquemaMetasMes, guardarMetasMes, metaDelDia, metasDelMes } from "@/lib/services/metas";
+import { mensajeMotivacional } from "@/lib/motivacion";
+import { aprobarTransferencia, esquemaTransferencia, listarTransferencias, rechazarTransferencia, registrarTransferencia } from "@/lib/services/transferencias";
+import { detalleVenta, listarVentas } from "@/lib/services/ventas";
 import { evaluar, validarFormula } from "@/lib/formula";
 import { claveLaboratorio, hoy, esIdValido, limpiarNumero, precioSugerido, r4, sumarDias } from "@/lib/util";
 import { base, preparar } from "./fixture";
 
 let db: Db;
 let F: Awaited<ReturnType<typeof base>>;
-const conteo = (soles: number) => ({ "10": Math.floor(soles / 10), "1": soles % 10 });
 
 beforeAll(async () => {
   db = await preparar();
   F = await base(db);
-  await abrirCaja(db, F.caja1, { cajaId: F.cajas[0].id, turno: "MAÑANA", conteo: conteo(150) });
+  await abrirCaja(db, F.caja1, { turno: "MAÑANA", monto: 150 });
 });
 
 describe("Fórmulas de métricas", () => {
@@ -79,8 +84,10 @@ describe("Venta con FEFO, campañas y comisiones", () => {
     expect(v.comisionVenta).toBe(0);
     await alternarCampana(db, F.admin, F.vit.id);
   });
-  it("exige receta y bloquea stock insuficiente", async () => {
-    await expect(crearVenta(db, F.caja1, { items: [{ presentacionId: F.presAmox.id, cantidad: 1, descuentoPct: 0, origen: "DIRECTA" }], tipoComprobante: "BOLETA", pagos: [{ medio: "EFECTIVO", monto: 6 }] })).rejects.toThrow(/receta/);
+  it("vende sin pedir receta y bloquea stock insuficiente", async () => {
+    const conReceta = await crearVenta(db, F.caja1, { items: [{ presentacionId: F.presAmox.id, cantidad: 1, descuentoPct: 0, origen: "DIRECTA" }], tipoComprobante: "BOLETA", pagos: [{ medio: "EFECTIVO", monto: 6 }] });
+    expect(conReceta.total).toBe(6);
+    await anularVenta(db, F.admin, conReceta.id, { motivo: "Prueba de venta sin receta" });
     await expect(crearVenta(db, F.caja1, { items: [{ presentacionId: F.pres.id, cantidad: 50, descuentoPct: 0, origen: "DIRECTA" }], tipoComprobante: "BOLETA", pagos: [{ medio: "EFECTIVO", monto: 900 }], cliente: { tipoDoc: "DNI", numero: "12345678", nombre: "Cliente" } })).rejects.toThrow(/insuficiente/);
   });
   it("ventas simultáneas nunca dejan stock negativo", async () => {
@@ -103,15 +110,47 @@ describe("Venta con FEFO, campañas y comisiones", () => {
 });
 
 describe("Cierre de caja", () => {
-  it("calcula el esperado y pide validación si la diferencia supera el umbral", async () => {
-    const esp = await calcularEsperado(db, (await db.select().from(schema.sesionCaja))[0].id);
+  it("el cajero declara el efectivo, valida los pagos virtuales y queda la diferencia", async () => {
+    const sesionId = (await db.select().from(schema.sesionCaja))[0].id;
+    const esp = await calcularEsperado(db, sesionId);
     expect(esp.EFECTIVO).toBe(150 + 54 * 2);
     expect(esp.YAPE).toBe(18);
-    const r = await cerrarCaja(db, F.caja1, { conteo: conteo(esp.EFECTIVO - 20), virtuales: { YAPE: 18, PLIN: 0, TARJETA: 0, TRANSFERENCIA: 0 }, fondoSiguiente: 150 });
-    expect(r.diferencia).toBe(-20);
-    expect(r.estado).toBe("EN_CIERRE");
-    await expect(validarCierre(db, F.caja1, { sesionId: r.sesionId, observacion: "faltante" })).rejects.toThrow();
-    const ok = await validarCierre(db, F.admin, { sesionId: r.sesionId, observacion: "Revisado con el cajero" });
+    const virtuales = await pagosVirtuales(db, sesionId);
+    expect(virtuales.map((v) => [v.medio, v.monto])).toEqual([["YAPE", 18]]);
+    expect(esquemaCierre.safeParse({ confirmados: [] }).success).toBe(false);
+    const r = await cerrarCaja(db, F.caja1, { efectivo: esp.EFECTIVO - 2, confirmados: [] });
+    expect(r).toMatchObject({ estado: "CERRADA", diferencia: -20, efectivo: { sistema: esp.EFECTIVO, declarado: esp.EFECTIVO - 2 }, virtual: { sistema: 18, declarado: 0, sinConfirmar: 1 } });
+    const [s] = await db.select().from(schema.sesionCaja).where(eq(schema.sesionCaja.id, r.sesionId));
+    expect(s).toMatchObject({ estado: "CERRADA", diferencia: -20, retiro: esp.EFECTIVO - 2, pagosNoConfirmados: [virtuales[0].clave] });
+    const rep = await reporteCierre(db, F.admin, r.sesionId);
+    expect(rep).toMatchObject({ saldoEfectivo: esp.EFECTIVO - 2, saldoVirtual: 0, diferencia: -20 });
+    expect(rep.virtuales[0].confirmado).toBe(false);
+    const ventas = rep.transacciones.filter((t) => t.ventaId);
+    expect(ventas.length).toBeGreaterThan(0);
+    for (const t of ventas) { expect(t.pagos.length).toBeGreaterThan(0); expect(t.usuario).toBeTruthy(); expect(["BOLETA", "FACTURA", "NOTA_VENTA"]).toContain(t.tipo); }
+    expect(ventas.every((t) => "ganancia" in t)).toBe(true);
+    expect(typeof rep.ganancia).toBe("number");
+    const delCajero = await reporteCierre(db, F.caja1, r.sesionId);
+    expect(delCajero.transacciones.some((t) => "ganancia" in t)).toBe(false);
+    expect(delCajero).not.toHaveProperty("ganancia");
+    expect(delCajero).not.toHaveProperty("costoVentas");
+    expect(delCajero).not.toHaveProperty("margen");
+    const idVenta = ventas[0].ventaId!;
+    const comp = await detalleVenta(db, idVenta, F.caja1);
+    expect(comp.venta).not.toHaveProperty("costoTotal");
+    expect(comp.items.every((i) => !("costoUnitario" in i))).toBe(true);
+    expect((await detalleVenta(db, idVenta, F.admin)).venta).toHaveProperty("costoTotal");
+    expect((await listarVentas(db, F.caja1)).some((v) => "costoTotal" in v)).toBe(false);
+    expect((await listarVentas(db, F.admin))[0]).toHaveProperty("costoTotal");
+    const fila = (await listarSesiones(db, F.admin)).find((x) => x.id === r.sesionId)!;
+    expect(fila).toMatchObject({ cajero: expect.any(String), saldoEfectivo: esp.EFECTIVO - 2, saldoVirtual: 0, diferencia: -20 });
+    expect(fila.abiertaEn).toBeTruthy();
+  });
+  it("un cierre antiguo que quedó por validar lo valida otro administrador", async () => {
+    const [s] = await db.select().from(schema.sesionCaja).orderBy(schema.sesionCaja.id).limit(1);
+    await db.update(schema.sesionCaja).set({ estado: "EN_CIERRE", cerradaEn: null }).where(eq(schema.sesionCaja.id, s.id));
+    await expect(validarCierre(db, F.caja1, { sesionId: s.id, observacion: "faltante" })).rejects.toThrow();
+    const ok = await validarCierre(db, F.admin, { sesionId: s.id, observacion: "Revisado con el cajero" });
     expect(ok.estado).toBe("CERRADA");
   });
 });
@@ -160,7 +199,7 @@ describe("Comisiones diarias y cierre de mes", () => {
   });
   it("el detalle del vendedor cuadra con su acumulado y no incluye lo revertido", async () => {
     const mes = hoy().slice(0, 7);
-    await abrirCaja(db, F.caja2, { cajaId: F.cajas[1].id, turno: "TARDE", conteo: conteo(150) });
+    await db.insert(schema.sesionCaja).values({ cajaId: F.cajas[1].id, usuarioId: F.caja2.id, turno: "TARDE", fondoInicial: 150, estado: "ABIERTA" });
     const v = await crearVenta(db, F.caja2, { items: [{ presentacionId: F.pres.id, cantidad: 1, descuentoPct: 0, origen: "DIRECTA" }], tipoComprobante: "BOLETA", pagos: [{ medio: "EFECTIVO", monto: 100 }] });
     const anulada = await crearVenta(db, F.caja2, { items: [{ presentacionId: F.pres.id, cantidad: 1, descuentoPct: 0, origen: "DIRECTA" }], tipoComprobante: "BOLETA", pagos: [{ medio: "EFECTIVO", monto: 100 }] });
     await anularVenta(db, F.admin, anulada.id, { motivo: "Cliente devolvió el producto" });
@@ -181,7 +220,8 @@ describe("Alertas y reportes", () => {
     const qf = await alertasDelRol(db, ["QF"]);
     expect(qf.conteos.find((c) => c.tipo === "POR_VENCER")?.total).toBeGreaterThan(0);
     const cajero = await alertasDelRol(db, ["CAJERO"]);
-    expect(cajero.alertas).toHaveLength(0);
+    // El cajero solo recibe los productos en campaña, nada de stock ni vencimientos.
+    expect(cajero.alertas.every((a) => a.tipo === "CAMPANA_ACTIVA")).toBe(true);
   });
   it("el filtro por tipo trae todas sus alertas aunque haya más urgentes (contador = lista)", async () => {
     const claves = Array.from({ length: 50 }, (_, i) => ({ clave: `PRUEBA:${i}`, tipo: "VENCIDO", severidad: "CRITICA", titulo: "Lote", detalle: "Vencido" }));
@@ -691,7 +731,488 @@ describe("Histórico de ventas del panel", () => {
     expect(a.detalle).toContain(`Cód. ${F.vit.codigo}`);
   });
   it("el reporte de stock crítico devuelve código y nombre", async () => {
-    const r = await reporteEspecial(db, F.admin, "stock-critico", {}) as { filas: { codigo: string; producto: string }[] };
+    const r = await reporteEspecial(db, F.admin, "stock-critico", {}) as unknown as { filas: { codigo: string; producto: string }[] };
     expect(r.filas.find((f) => f.codigo === F.vit.codigo)?.producto).toBe(F.vit.nombre);
+  });
+});
+
+describe("Transferencias a otra botica", () => {
+  const stockVit = async () => (await db.select().from(schema.lote).where(eq(schema.lote.productoId, F.vit.id))).reduce((a, l) => a + l.cantidad, 0);
+  it("el cajero registra solo cantidades; el stock no se mueve y no ve precios", async () => {
+    const antes = await stockVit();
+    const r = await registrarTransferencia(db, F.caja1, { tipoDestino: "EMPRESA", destinoTipoDoc: "RUC" as const, destinoDoc: "20100000011", destino: "Botica Sucursal Norte", motivo: "Pedido por falta de stock", items: [{ productoId: F.vit.id, unidades: 2 }, { productoId: F.vit.id, unidades: 1 }] });
+    expect(r.referencia).toMatch(/^TR01-\d{8}$/);
+    expect(await stockVit()).toBe(antes);
+    const vista = await listarTransferencias(db, F.caja1);
+    expect(vista[0].items).toHaveLength(1);
+    expect(vista[0].items[0].unidades).toBe(3);
+    expect(vista[0]).not.toHaveProperty("totalVenta");
+    expect(vista[0].items[0]).not.toHaveProperty("precioUnitario");
+    expect(JSON.stringify(vista)).not.toMatch(/precio|costo/i);
+    expect(await listarTransferencias(db, F.caja2)).toHaveLength(0);
+  });
+  it("el propietario aprueba con precio: descuenta por FEFO, va al kardex, sin comisión y la campaña sigue activa", async () => {
+    const [t] = await listarTransferencias(db, F.admin, "PENDIENTE");
+    expect(t.items[0].enCampana).toBe(true);
+    const antes = await stockVit();
+    const comisiones = (await db.select().from(schema.comision)).length;
+    const r = await aprobarTransferencia(db, F.admin, t.id, { vendedorId: F.caja2.id, medioPago: "TRANSFERENCIA", precios: [{ detalleId: t.items[0].id, precioUnitario: 15 }], costoAdicional: 5 });
+    expect(r.totalVenta).toBe(45);
+    expect(await stockVit()).toBe(antes - 3);
+    expect((await db.select().from(schema.comision)).length).toBe(comisiones);
+    const k = await db.select().from(schema.kardex).where(and(eq(schema.kardex.tipo, "TRANSFERENCIA"), eq(schema.kardex.documentoId, r.ventaId!)));
+    expect(k.reduce((s, x) => s + x.salida, 0)).toBe(3);
+    const [vencido] = await db.select().from(schema.lote).where(eq(schema.lote.id, F.lotes.vencido.id));
+    expect(k.some((x) => x.loteId === vencido.id)).toBe(false);
+    const camp = await db.select().from(schema.campana).where(eq(schema.campana.productoId, F.vit.id));
+    expect(camp.some((c) => c.estado === "ACTIVA")).toBe(true);
+    const [vista] = await listarTransferencias(db, F.admin, "APROBADA");
+    expect(vista).toMatchObject({ totalVenta: 45, costoAdicional: 5 });
+    await expect(aprobarTransferencia(db, F.admin, t.id, { vendedorId: F.caja2.id, medioPago: "TRANSFERENCIA", precios: [{ detalleId: t.items[0].id, precioUnitario: 15 }] })).rejects.toThrow(/ya fue/);
+  });
+  it("valida stock, precios, rechazo con comentario y avisa en el panel", async () => {
+    await expect(registrarTransferencia(db, F.caja1, { tipoDestino: "EMPRESA", destinoTipoDoc: "RUC" as const, destinoDoc: "20100000011", destino: "Botica Sur", motivo: "Pedido urgente", items: [{ productoId: F.vit.id, unidades: 999999 }] })).rejects.toThrow(/vigentes/);
+    await expect(registrarTransferencia(db, F.caja1, { tipoDestino: "EMPRESA", destinoTipoDoc: "RUC" as const, destinoDoc: "20100000011", destino: "Botica Sur", motivo: "Pedido urgente", items: [{ productoId: 999999, unidades: 1 }] })).rejects.toThrow(/no existe/);
+    const r = await registrarTransferencia(db, F.caja1, { tipoDestino: "EMPRESA", destinoTipoDoc: "RUC" as const, destinoDoc: "20100000011", destino: "Botica Sur", motivo: "Pedido urgente", items: [{ productoId: F.vit.id, unidades: 1 }] });
+    await evaluarAlertas(db);
+    expect((await alertasDelRol(db, ["ADMIN"])).conteos.find((c) => c.tipo === "TRANSFERENCIA_PENDIENTE")?.total).toBe(1);
+    expect((await alertasDelRol(db, ["CAJERO"])).conteos.find((c) => c.tipo === "TRANSFERENCIA_PENDIENTE")).toBeUndefined();
+    await expect(aprobarTransferencia(db, F.admin, r.id, { vendedorId: F.caja2.id, medioPago: "TRANSFERENCIA", precios: [{ detalleId: 999999, precioUnitario: 1 }] })).rejects.toThrow(/Falta el precio/);
+    const antes = await stockVit();
+    await rechazarTransferencia(db, F.admin, r.id, { comentario: "La sucursal ya se abasteció" });
+    expect(await stockVit()).toBe(antes);
+    await evaluarAlertas(db);
+    expect((await alertasDelRol(db, ["ADMIN"])).conteos.find((c) => c.tipo === "TRANSFERENCIA_PENDIENTE")?.total).toBe(0);
+    await expect(eliminarUsuario(db, F.admin, F.caja1.id)).rejects.toThrow(/operaciones registradas/);
+  });
+});
+
+describe("Transferencias con lote elegido", () => {
+  it("descuenta solo del lote elegido aunque otro venza antes", async () => {
+    const lotes = (await db.select().from(schema.lote).where(eq(schema.lote.productoId, F.vit.id))).filter((l) => l.estado === "ACTIVO" && l.vencimiento > hoy() && l.cantidad > 0).sort((a, b) => (a.vencimiento < b.vencimiento ? -1 : 1));
+    const ultimo = lotes.at(-1)!;
+    const antes = new Map(lotes.map((l) => [l.id, l.cantidad]));
+    const r = await registrarTransferencia(db, F.caja1, { tipoDestino: "EMPRESA", destinoTipoDoc: "RUC" as const, destinoDoc: "20100000011", destino: "Botica Lote", motivo: "Pedido con lote fijo", items: [{ productoId: F.vit.id, loteId: ultimo.id, unidades: 1 }] });
+    const [t] = (await listarTransferencias(db, F.admin, "PENDIENTE")).filter((x) => x.id === r.id);
+    expect(t.items[0]).toMatchObject({ loteId: ultimo.id, lote: ultimo.numero });
+    await aprobarTransferencia(db, F.admin, r.id, { vendedorId: F.caja2.id, medioPago: "TRANSFERENCIA", precios: [{ detalleId: t.items[0].id, precioUnitario: 10 }], motivoBajoCosto: "Precio de prueba" });
+    const despues = new Map((await db.select().from(schema.lote).where(eq(schema.lote.productoId, F.vit.id))).map((l) => [l.id, l.cantidad]));
+    for (const l of lotes) expect(despues.get(l.id)).toBe(l.id === ultimo.id ? antes.get(l.id)! - 1 : antes.get(l.id));
+  });
+  it("rechaza lotes de otro producto, vencidos o con menos unidades", async () => {
+    const base = { tipoDestino: "EMPRESA" as const, destinoTipoDoc: "RUC" as const, destinoDoc: "20100000011", destino: "Botica Lote", motivo: "Pedido con lote fijo" };
+    await expect(registrarTransferencia(db, F.caja1, { ...base, items: [{ productoId: F.amox.id, loteId: F.lotes.lejano.id, unidades: 1 }] })).rejects.toThrow(/no pertenece/);
+    await expect(registrarTransferencia(db, F.caja1, { ...base, items: [{ productoId: F.vit.id, loteId: F.lotes.vencido.id, unidades: 1 }] })).rejects.toThrow(/vencido/);
+    const [l] = await db.select().from(schema.lote).where(eq(schema.lote.id, F.lotes.lejano.id));
+    await expect(registrarTransferencia(db, F.caja1, { ...base, items: [{ productoId: F.vit.id, loteId: l.id, unidades: l.cantidad + 1 }] })).rejects.toThrow(/tiene/);
+  });
+});
+
+describe("Transferencia como venta o como traslado", () => {
+  const ventas = async () => (await db.select().from(schema.venta)).length;
+  it("a otra farmacia: factura a su RUC, venta del vendedor elegido, fuera de caja y sin comisión", async () => {
+    const [ses] = await db.select().from(schema.sesionCaja).where(eq(schema.sesionCaja.estado, "ABIERTA"));
+    const esperado = await calcularEsperado(db, ses.id);
+    const comisiones = (await db.select().from(schema.comision)).length;
+    const r = await registrarTransferencia(db, F.caja1, { tipoDestino: "EMPRESA", destino: "Farmacia Vecina SAC", destinoTipoDoc: "RUC" as const, destinoDoc: "20555555551", motivo: "Venta por volumen", items: [{ productoId: F.vit.id, unidades: 4 }] });
+    const [t] = (await listarTransferencias(db, F.admin, "PENDIENTE")).filter((x) => x.id === r.id);
+    await expect(aprobarTransferencia(db, F.admin, r.id, { precios: [{ detalleId: t.items[0].id, precioUnitario: 12 }], medioPago: "TRANSFERENCIA" })).rejects.toThrow(/atribuye/);
+    const ap = await aprobarTransferencia(db, F.admin, r.id, { vendedorId: F.caja2.id, medioPago: "TRANSFERENCIA", precios: [{ detalleId: t.items[0].id, precioUnitario: 12 }], motivoBajoCosto: "Precio de prueba" });
+    expect(ap.factura).toMatch(/^F001-/);
+    const [v] = await db.select().from(schema.venta).where(eq(schema.venta.id, ap.ventaId!));
+    expect(v).toMatchObject({ usuarioId: F.caja2.id, canal: "TRANSFERENCIA", tipoComprobante: "FACTURA", sesionId: null, total: 48, cpeEstado: "PENDIENTE" });
+    const [cli] = await db.select().from(schema.cliente).where(eq(schema.cliente.id, v.clienteId!));
+    expect(cli).toMatchObject({ tipoDoc: "RUC", numero: "20555555551", nombre: "Farmacia Vecina SAC" });
+    const det = await db.select().from(schema.ventaDetalle).where(eq(schema.ventaDetalle.ventaId, v.id));
+    expect(det.reduce((s, d) => s + d.subtotal, 0)).toBeCloseTo(48, 2);
+    expect(det.reduce((s, d) => s + d.unidades, 0)).toBe(4);
+    expect((await listarVentas(db, F.caja2, 1)).some((x) => x.id === v.id)).toBe(true);
+    expect((await listarVentas(db, F.caja1, 1)).some((x) => x.id === v.id)).toBe(false);
+    const h = await historicoVentas(db, F.caja2, { anio: Number(hoy().slice(0, 4)) });
+    expect(h.tickets).toBeGreaterThan(0);
+    expect(await calcularEsperado(db, ses.id)).toEqual(esperado);
+    expect((await db.select().from(schema.comision)).length).toBe(comisiones);
+    const [vista] = (await listarTransferencias(db, F.caja1)).filter((x) => x.id === r.id);
+    expect(vista).toMatchObject({ factura: ap.factura, vendedor: "Caja 2" });
+    expect(vista).not.toHaveProperty("totalVenta");
+  });
+  it("anular la factura devuelve el stock y anula la transferencia", async () => {
+    const [t] = (await listarTransferencias(db, F.admin, "APROBADA")).filter((x) => x.destino === "Farmacia Vecina SAC");
+    const antes = (await db.select().from(schema.lote).where(eq(schema.lote.productoId, F.vit.id))).reduce((a, l) => a + l.cantidad, 0);
+    await anularVenta(db, F.admin, t.ventaId!, { motivo: "La farmacia devolvió todo" });
+    expect((await db.select().from(schema.lote).where(eq(schema.lote.productoId, F.vit.id))).reduce((a, l) => a + l.cantidad, 0)).toBe(antes + 4);
+    expect((await listarTransferencias(db, F.admin)).find((x) => x.id === t.id)?.estado).toBe("ANULADA");
+  });
+  it("a una sucursal propia: traslado sin venta ni precio, sale a costo", async () => {
+    const n = await ventas();
+    expect(esquemaTransferencia.safeParse({ tipoDestino: "SUCURSAL", destino: "Sucursal Comas", motivo: "Reposición de local", items: [{ productoId: 1, unidades: 1 }] }).success).toBe(true);
+    expect(esquemaTransferencia.safeParse({ tipoDestino: "EMPRESA", destino: "Farmacia X", motivo: "Venta por volumen", items: [{ productoId: 1, unidades: 1 }] }).success).toBe(false);
+    const r = await registrarTransferencia(db, F.caja1, { tipoDestino: "SUCURSAL", destino: "Sucursal Comas", motivo: "Reposición de local", items: [{ productoId: F.vit.id, unidades: 1 }] });
+    const ap = await aprobarTransferencia(db, F.admin, r.id, {});
+    expect(ap).toMatchObject({ ventaId: null, factura: null, totalVenta: null });
+    expect(await ventas()).toBe(n);
+    const k = await db.select().from(schema.kardex).where(and(eq(schema.kardex.tipo, "TRANSFERENCIA"), eq(schema.kardex.documentoTipo, "TRASLADO")));
+    expect(k.reduce((s, x) => s + x.salida, 0)).toBe(1);
+  });
+  it("las ventas por transferencia no inflan la demanda que sugiere reponer", async () => {
+    await evaluarAlertas(db);
+    const antes = (await db.select().from(schema.alerta).where(eq(schema.alerta.clave, `STOCK:p:${F.vit.id}`)))[0]?.detalle;
+    const r = await registrarTransferencia(db, F.caja1, { tipoDestino: "EMPRESA", destino: "Farmacia Vecina SAC", destinoTipoDoc: "RUC" as const, destinoDoc: "20555555551", motivo: "Venta por volumen", items: [{ productoId: F.vit.id, unidades: 2 }] });
+    const [t] = (await listarTransferencias(db, F.admin, "PENDIENTE")).filter((x) => x.id === r.id);
+    await aprobarTransferencia(db, F.admin, r.id, { vendedorId: F.caja2.id, medioPago: "EFECTIVO", precios: [{ detalleId: t.items[0].id, precioUnitario: 12 }], motivoBajoCosto: "Precio de prueba" });
+    await evaluarAlertas(db);
+    const despues = (await db.select().from(schema.alerta).where(eq(schema.alerta.clave, `STOCK:p:${F.vit.id}`)))[0]?.detalle;
+    expect(despues?.match(/vende ([\d.]+)/)?.[1]).toBe(antes?.match(/vende ([\d.]+)/)?.[1]);
+  });
+});
+
+describe("Transferencia a persona con DNI y referencias de precio", () => {
+  it("con DNI emite boleta a nombre de la persona", async () => {
+    expect(esquemaTransferencia.safeParse({ tipoDestino: "EMPRESA", destinoTipoDoc: "DNI", destinoDoc: "1234567", destino: "Juan Pérez", motivo: "Compra por volumen", items: [{ productoId: 1, unidades: 1 }] }).success).toBe(false);
+    expect(esquemaTransferencia.safeParse({ tipoDestino: "EMPRESA", destinoTipoDoc: "RUC", destinoDoc: "12345678", destino: "Juan Pérez", motivo: "Compra por volumen", items: [{ productoId: 1, unidades: 1 }] }).success).toBe(false);
+    const r = await registrarTransferencia(db, F.caja1, { tipoDestino: "EMPRESA", destinoTipoDoc: "DNI", destinoDoc: "45678912", destino: "Juan Pérez Quispe", motivo: "Compra por volumen", items: [{ productoId: F.vit.id, unidades: 1 }] });
+    const [t] = (await listarTransferencias(db, F.admin, "PENDIENTE")).filter((x) => x.id === r.id);
+    const ap = await aprobarTransferencia(db, F.admin, r.id, { vendedorId: F.caja1.id, medioPago: "EFECTIVO", precios: [{ detalleId: t.items[0].id, precioUnitario: 20 }] });
+    expect(ap.comprobante).toBe("BOLETA");
+    const [v] = await db.select().from(schema.venta).where(eq(schema.venta.id, ap.ventaId!));
+    expect(v.tipoComprobante).toBe("BOLETA");
+    expect(v.serie).toBe("B001");
+    const [c] = await db.select().from(schema.cliente).where(eq(schema.cliente.id, v.clienteId!));
+    expect(c).toMatchObject({ tipoDoc: "DNI", numero: "45678912" });
+  });
+  it("el propietario ve precio de lista y costo actual (del lote elegido o del FEFO); el cajero no", async () => {
+    const lotes = (await db.select().from(schema.lote).where(eq(schema.lote.productoId, F.vit.id))).filter((l) => l.estado === "ACTIVO" && l.vencimiento > hoy() && l.cantidad > 0).sort((a, b) => (a.vencimiento < b.vencimiento ? -1 : 1));
+    const ultimo = lotes.at(-1)!;
+    const r = await registrarTransferencia(db, F.caja1, { tipoDestino: "EMPRESA", destinoTipoDoc: "RUC", destinoDoc: "20555555551", destino: "Farmacia Vecina SAC", motivo: "Venta por volumen", items: [{ productoId: F.vit.id, unidades: 1 }, { productoId: F.vit.id, loteId: ultimo.id, unidades: 1 }] });
+    const [t] = (await listarTransferencias(db, F.admin, "PENDIENTE")).filter((x) => x.id === r.id);
+    const fefo = t.items.find((i) => !i.loteId)! as { precioActual?: number; costoActual?: number };
+    const fijo = t.items.find((i) => i.loteId)! as { precioActual?: number; costoActual?: number };
+    expect(fefo.precioActual).toBe(F.pres.pvp);
+    expect(fefo.costoActual).toBe(lotes[0].costoUnitario);
+    expect(fijo.costoActual).toBe(ultimo.costoUnitario);
+    const [delCajero] = (await listarTransferencias(db, F.caja1)).filter((x) => x.id === r.id);
+    expect(JSON.stringify(delCajero)).not.toMatch(/precio|costo/i);
+    await rechazarTransferencia(db, F.admin, r.id, { comentario: "Solo era una prueba" });
+  });
+});
+
+describe("Filtro de reportes por canal de venta", () => {
+  it("separa mostrador y transferencia, suman el total, y solo el propietario puede usarlo", async () => {
+    const q = { agrupar: "total", metricas: ["ventas", "tickets"], desde: sumarDias(hoy(), -30), hasta: hoy() };
+    const total = await ejecutarReporte(db, ["ADMIN"], q);
+    const mostrador = await ejecutarReporte(db, ["ADMIN"], { ...q, filtros: { canal: "MOSTRADOR" } });
+    const transf = await ejecutarReporte(db, ["ADMIN"], { ...q, filtros: { canal: "TRANSFERENCIA" } });
+    const v = (r: typeof total) => r.filas.reduce((s, f) => s + (f.valores.tickets ?? 0), 0);
+    expect(v(transf)).toBeGreaterThan(0);
+    expect(v(mostrador) + v(transf)).toBe(v(total));
+    await expect(ejecutarReporte(db, ["CONTADOR"], { ...q, filtros: { canal: "TRANSFERENCIA" } })).rejects.toThrow(/solo está disponible para el propietario/);
+    await expect(ejecutarReporte(db, ["ADMIN"], { ...q, filtros: { canal: "OTRO" } })).rejects.toThrow(/no válido/);
+    await expect(ejecutarReporte(db, ["CONTADOR"], q)).resolves.toBeTruthy();
+  });
+});
+
+describe("Apertura simple de una sola caja", () => {
+  it("abre la caja principal con un monto digitado, sin elegir caja ni contar billetes", async () => {
+    // Deja la caja libre sin depender de lo que hicieron las pruebas anteriores.
+    await db.update(schema.sesionCaja).set({ estado: "CERRADA", cerradaEn: new Date() }).where(inArray(schema.sesionCaja.estado, ["ABIERTA", "EN_CIERRE"]));
+    const s = await abrirCaja(db, F.qf, { turno: "TARDE", monto: 150 });
+    expect(s).toMatchObject({ cajaId: F.cajas[0].id, fondoInicial: 150, conteoApertura: null });
+    await expect(abrirCaja(db, F.caja1, { turno: "TARDE", monto: 80 })).rejects.toThrow(/abierta por QF/);
+    await expect(abrirCaja(db, F.qf, { turno: "TARDE", monto: 80 })).rejects.toThrow(/Ya tienes/);
+    for (const malo of [{ turno: "TARDE", monto: -5 }, { turno: "TARDE", monto: "cien" }, { turno: "X", monto: 10 }, { turno: "TARDE" }]) expect(esquemaApertura.safeParse(malo).success).toBe(false);
+  });
+  it("el efectivo esperado parte del monto de apertura y el cierre ya no pide dejar fondo", async () => {
+    const [s] = await db.select().from(schema.sesionCaja).where(and(eq(schema.sesionCaja.usuarioId, F.qf.id), eq(schema.sesionCaja.estado, "ABIERTA")));
+    const esp = await calcularEsperado(db, s.id);
+    expect(esp.EFECTIVO).toBe(150);
+    const r = await cerrarCaja(db, F.qf, { efectivo: 155.5, confirmados: [] });
+    expect(r.diferencia).toBe(5.5);
+    const [cerrada] = await db.select().from(schema.sesionCaja).where(eq(schema.sesionCaja.id, s.id));
+    expect(cerrada).toMatchObject({ estado: "CERRADA", fondoSiguiente: null, retiro: 155.5, pagosNoConfirmados: [] });
+    await expect(abrirCaja(db, F.caja1, { turno: "NOCHE", monto: 0 })).resolves.toMatchObject({ cajaId: F.cajas[0].id, fondoInicial: 0 });
+  });
+});
+
+describe("Más vendidos del punto de venta", () => {
+  it("ordena por tickets de mostrador y solo trae productos con stock vigente", async () => {
+    const lista = await masVendidos(db, 12);
+    expect(lista.length).toBeGreaterThan(0);
+    expect(lista.length).toBeLessThanOrEqual(12);
+    for (let i = 1; i < lista.length; i++) expect(lista[i - 1].tickets).toBeGreaterThanOrEqual(lista[i].tickets);
+    for (const p of lista) { expect(p.stockVigente).toBeGreaterThan(0); expect(p.presentaciones.length).toBeGreaterThan(0); }
+    const ventasTransfer = await db.select({ id: schema.venta.id }).from(schema.venta).where(eq(schema.venta.canal, "TRANSFERENCIA"));
+    if (ventasTransfer.length) {
+      const soloTransfer = await db.execute(sql`select d.producto_id from venta_detalle d join venta v on v.id = d.venta_id group by 1 having bool_and(v.canal = 'TRANSFERENCIA')`);
+      const ids = new Set(((soloTransfer as unknown as { rows: { producto_id: number }[] }).rows ?? []).map((r) => r.producto_id));
+      expect(lista.some((p) => ids.has(p.id))).toBe(false);
+    }
+  });
+});
+
+describe("Venta del administrador en campaña", () => {
+  it("cobra el mismo precio que el cajero pero no genera comisión", async () => {
+    const item = { items: [{ presentacionId: F.pres.id, cantidad: 1, descuentoPct: 0, origen: "DIRECTA" as const }], tipoComprobante: "BOLETA" as const, pagos: [{ medio: "EFECTIVO" as const, monto: 18 }] };
+    const comoAdmin = { ...F.caja1, roles: [...F.caja1.roles, "ADMIN" as Rol] };
+    const deAdmin = await crearVenta(db, comoAdmin, item);
+    expect(deAdmin.comisionVenta).toBe(0);
+    expect(await db.select().from(schema.comision).where(eq(schema.comision.ventaId, deAdmin.id))).toHaveLength(0);
+    const deCajero = await crearVenta(db, F.caja1, item);
+    expect(deCajero.total).toBe(deAdmin.total);
+    expect(deCajero.comisionVenta).toBeGreaterThan(0);
+  });
+});
+
+describe("Precio de campaña", () => {
+  it("cobra el precio de campaña, guarda la diferencia como descuento y comisiona sobre lo cobrado", async () => {
+    const [prod] = await db.insert(schema.producto).values({ codigo: "PC-1", nombre: "Colágeno promo", costoPromedio: 5 }).returning();
+    const [und, caja] = await db.insert(schema.presentacion).values([
+      { productoId: prod.id, nombre: "Unidad", factor: 1, pvp: 10 },
+      { productoId: prod.id, nombre: "Caja x10", factor: 10, pvp: 90 },
+    ]).returning();
+    const [lt] = await db.insert(schema.lote).values({ productoId: prod.id, numero: "PC-L1", vencimiento: sumarDias(hoy(), 300), costoUnitario: 5, cantidad: 50 }).returning();
+    await db.insert(schema.kardex).values({ productoId: prod.id, loteId: lt.id, tipo: "INVENTARIO_INICIAL", documentoTipo: "INVENTARIO", entrada: 50, costoUnitario: 5, saldoUnidades: 50, costoPromedio: 5, saldoValorizado: 250, usuarioId: F.admin.id });
+    const base = { codigo: "PC-1", nombre: "Colágeno noviembre", porcentaje: 10, inicio: hoy(), fin: sumarDias(hoy(), 10), activarAhora: true };
+    await expect(crearCampana(db, F.admin, { ...base, precios: { [und.id]: 10 } })).rejects.toThrow(/menor al de lista/);
+    await expect(crearCampana(db, F.admin, { ...base, loteId: lt.id, precios: { [und.id]: 8 } })).rejects.toThrow(/todo el producto/);
+    await expect(crearCampana(db, F.admin, { ...base, precios: { [F.pres.id]: 1 } })).rejects.toThrow(/no pertenece/);
+    await crearCampana(db, F.admin, { ...base, precios: { [und.id]: 8 } });
+
+    const [enBusqueda] = await buscarProductos(db, "PC-1");
+    expect(enBusqueda.presentaciones.map((x) => x.pvpCampana)).toEqual([8, null]);
+
+    const v = await crearVenta(db, F.caja1, { items: [{ presentacionId: und.id, cantidad: 2, descuentoPct: 0, origen: "DIRECTA" }, { presentacionId: caja.id, cantidad: 1, descuentoPct: 0, origen: "DIRECTA" }], tipoComprobante: "BOLETA", pagos: [{ medio: "EFECTIVO", monto: 106 }] });
+    expect(v.total).toBe(106); // 2 × 8 (campaña) + 90 (caja sin precio de campaña)
+    const [cab] = await db.select().from(schema.venta).where(eq(schema.venta.id, v.id));
+    expect(cab.descuento).toBe(4);
+    const det = await db.select().from(schema.ventaDetalle).where(and(eq(schema.ventaDetalle.ventaId, v.id), eq(schema.ventaDetalle.presentacionId, und.id)));
+    expect(det[0]).toMatchObject({ precioUnitario: 10, descuento: 4, subtotal: 16 });
+    // comisión 10% sobre lo cobrado sin IGV: (16 + 90) / 1.18 × 10%
+    expect(v.comisionVenta).toBeCloseTo(r2t((16 / 1.18) * 0.1) + r2t((90 / 1.18) * 0.1), 2);
+  });
+});
+const r2t = (n: number) => Math.round(n * 100) / 100;
+
+describe("Accesos rápidos del panel", () => {
+  it("sin historial propone secciones de partida que el perfil puede abrir", async () => {
+    expect((await accesosFrecuentes(db, F.caja1)).map((a) => a.href)).toEqual(["/vender", "/caja", "/ventas", "/productos"]);
+    const almacen = (await accesosFrecuentes(db, F.almacen)).map((a) => a.href);
+    expect(almacen).not.toContain("/vender");
+    expect(almacen.length).toBeLessThanOrEqual(4);
+  });
+  it("ordena por uso, cuenta subpáginas en su sección e ignora lo que el perfil no puede abrir", async () => {
+    for (let i = 0; i < 5; i++) await registrarUso(db, F.qf, "/kardex");
+    for (let i = 0; i < 3; i++) await registrarUso(db, F.qf, "/transferencias");
+    await registrarUso(db, F.qf, "/caja/reporte/12");
+    await registrarUso(db, F.qf, "/caja");
+    expect(await registrarUso(db, F.qf, "/usuarios")).toEqual({ registrado: false });
+    expect(await registrarUso(db, F.qf, "/")).toEqual({ registrado: false });
+    const a = await accesosFrecuentes(db, F.qf);
+    expect(a.map((x) => [x.href, x.visitas])).toEqual([["/kardex", 5], ["/transferencias", 3], ["/caja", 2], ["/vender", 0]]);
+    const p = await panel(db, F.qf);
+    expect(p.accesos).toHaveLength(4);
+  });
+});
+
+describe("Meta del día y mensajes motivacionales", () => {
+  it("usa la meta fijada por el administrador y la devuelve con cada venta", async () => {
+    await db.update(schema.usuario).set({ metaDiaria: 1000 }).where(eq(schema.usuario.id, F.caja1.id));
+    const antes = await metaDelDia(db, F.caja1.id);
+    expect(antes).toMatchObject({ objetivo: 1000, automatica: false });
+    const v = await crearVenta(db, F.caja1, { items: [{ presentacionId: F.pres.id, cantidad: 1, descuentoPct: 0, origen: "DIRECTA" }], tipoComprobante: "BOLETA", pagos: [{ medio: "EFECTIVO", monto: 50 }] });
+    expect(v.meta.vendido).toBeCloseTo(antes.vendido + v.total, 2);
+    expect(v.meta.porcentaje).toBeCloseTo((v.meta.vendido / 1000) * 100, 1);
+    expect(v.meta.faltante).toBeCloseTo(1000 - v.meta.vendido, 2);
+  });
+  it("sin meta fijada y sin historial no inventa una meta", async () => {
+    await db.update(schema.usuario).set({ metaDiaria: null }).where(eq(schema.usuario.id, F.almacen.id));
+    expect(await metaDelDia(db, F.almacen.id)).toMatchObject({ objetivo: null, porcentaje: null, automatica: false });
+  });
+  it("calcula la meta automática con el promedio de días anteriores + 10 %", async () => {
+    await db.update(schema.usuario).set({ metaDiaria: null }).where(eq(schema.usuario.id, F.caja1.id));
+    const ayer = new Date(Date.now() - 86400000);
+    const [v] = await db.select().from(schema.venta).where(eq(schema.venta.usuarioId, F.caja1.id)).limit(1);
+    await db.update(schema.venta).set({ fecha: ayer }).where(eq(schema.venta.id, v.id));
+    const m = await metaDelDia(db, F.caja1.id);
+    expect(m.automatica).toBe(true);
+    expect(m.objetivo! % 10).toBe(0);
+    expect(m.objetivo!).toBeGreaterThanOrEqual(10);
+  });
+  it("el mensaje cambia según el avance y no repite el anterior", () => {
+    const meta = (vendido: number) => ({ objetivo: 100, vendido, porcentaje: vendido, faltante: Math.max(0, 100 - vendido), automatica: false });
+    expect(mensajeMotivacional(meta(105), "Ana Pérez", 10)).toMatch(/cumpliste tu meta del día, Ana/);
+    const casi = mensajeMotivacional(meta(80), "Ana Pérez", 5);
+    expect(["Ya casi", "recta final", "muy cerca", "empujón"].some((t) => casi.includes(t))).toBe(true);
+    for (let i = 0; i < 20; i++) { const a = mensajeMotivacional(meta(30), "Ana", 1); expect(mensajeMotivacional(meta(30), "Ana", 1, a)).not.toBe(a); }
+    expect(mensajeMotivacional(null, "Ana", 10)).toMatch(/\S/);
+  });
+});
+
+describe("Alerta de productos en campaña", () => {
+  it("avisa a quienes venden, no al administrador", async () => {
+    await evaluarAlertas(db);
+    const cajero = await alertasDelRol(db, ["CAJERO"]);
+    const conteo = cajero.conteos.find((c) => c.tipo === "CAMPANA_ACTIVA");
+    expect(conteo?.total).toBeGreaterThan(0);
+    const lista = await alertasDelRol(db, ["CAJERO"], { tipo: "CAMPANA_ACTIVA", limite: 50 });
+    expect(lista.alertas.every((a) => /Comisiona \d/.test(a.detalle))).toBe(true);
+    const admin = await alertasDelRol(db, ["ADMIN"]);
+    expect(admin.conteos.some((c) => c.tipo === "CAMPANA_ACTIVA")).toBe(false);
+  });
+});
+
+describe("Recordatorio de campañas a quien no está vendiendo", () => {
+  it("recuerda los productos en campaña tras el tiempo sin vender, solo con la caja abierta", async () => {
+    await db.update(schema.sesionCaja).set({ estado: "CERRADA", cerradaEn: new Date() }).where(inArray(schema.sesionCaja.estado, ["ABIERTA", "EN_CIERRE"]));
+    expect(await recordatorioCampanas(db, F.caja1)).toMatchObject({ activo: false, motivo: "SIN_CAJA" });
+    const s = await abrirCaja(db, F.caja1, { turno: "TARDE", monto: 0 });
+    const vigentes = await campanasVigentes(db);
+    expect(vigentes.length).toBeGreaterThan(0);
+    expect(vigentes.every((c) => c.vigente > 0)).toBe(true);
+    const pronto = await recordatorioCampanas(db, F.caja1, new Date(s.abiertaEn.getTime() + 5 * 60000));
+    expect(pronto).toMatchObject({ activo: true, umbralMin: 15, minutosSinVender: 5, debeRecordar: false });
+    const tarde = await recordatorioCampanas(db, F.caja1, new Date(s.abiertaEn.getTime() + 20 * 60000));
+    expect(tarde).toMatchObject({ activo: true, minutosSinVender: 20, debeRecordar: true });
+    if (!tarde.activo) throw new Error("debía estar activo");
+    expect(tarde.productos.length).toBeGreaterThan(0);
+    expect(tarde.productos.length).toBeLessThanOrEqual(5);
+    expect(tarde.productos[0].porcentaje).toBeGreaterThan(0);
+    // Quien no vende no recibe el recordatorio; y el administrador puede apagarlo con 0 minutos.
+    expect(await recordatorioCampanas(db, F.admin)).toMatchObject({ activo: false });
+    expect(await recordatorioCampanas(db, F.almacen)).toMatchObject({ activo: false });
+    await db.insert(schema.parametro).values({ clave: "recordatorio_campana_min", valor: "0" });
+    expect(await recordatorioCampanas(db, F.caja1, new Date(s.abiertaEn.getTime() + 90 * 60000))).toMatchObject({ debeRecordar: false });
+    await db.delete(schema.parametro).where(eq(schema.parametro.clave, "recordatorio_campana_min"));
+  });
+});
+
+describe("Venta bajo costo solo por decisión del administrador", () => {
+  it("la transferencia bajo costo exige motivo y queda en la auditoría", async () => {
+    const t0 = await registrarTransferencia(db, F.caja1, { tipoDestino: "EMPRESA", destinoTipoDoc: "RUC" as const, destinoDoc: "20100000011", destino: "Botica Liquidación", motivo: "Recuperar inversión", items: [{ productoId: F.vit.id, unidades: 1 }] });
+    const [t] = (await listarTransferencias(db, F.admin, "PENDIENTE")).filter((x) => x.id === t0.id);
+    const costo = t.items[0].costoActual!;
+    expect(costo).toBeGreaterThan(0.02);
+    const base = { vendedorId: F.caja1.id, medioPago: "EFECTIVO" as const, precios: [{ detalleId: t.items[0].id, precioUnitario: 0.01 }] };
+    await expect(aprobarTransferencia(db, F.admin, t.id, base)).rejects.toThrow(/debajo del costo/);
+    await expect(aprobarTransferencia(db, F.qf, t.id, { ...base, motivoBajoCosto: "Liquidación por vencer" })).rejects.toThrow(/Solo el administrador/);
+    const r = await aprobarTransferencia(db, F.admin, t.id, { ...base, motivoBajoCosto: "Liquidación por vencer" });
+    expect(r.estado).toBe("APROBADA");
+    const [aud] = await db.select().from(schema.auditoria).where(and(eq(schema.auditoria.accion, "APROBAR_TRANSFERENCIA"), eq(schema.auditoria.entidadId, t.id)));
+    expect(aud.detalle).toMatchObject({ motivoBajoCosto: "Liquidación por vencer" });
+    expect((aud.detalle as { bajoCosto: unknown[] }).bajoCosto).toHaveLength(1);
+    // A precio de costo + IGV (o más) no pide nada.
+    const t1 = await registrarTransferencia(db, F.caja1, { tipoDestino: "EMPRESA", destinoTipoDoc: "RUC" as const, destinoDoc: "20100000011", destino: "Botica Norte", motivo: "Pedido normal", items: [{ productoId: F.vit.id, unidades: 1 }] });
+    const [p1] = (await listarTransferencias(db, F.admin, "PENDIENTE")).filter((x) => x.id === t1.id);
+    const minimo = Math.ceil(p1.items[0].costoActual! * 1.18 * 100) / 100;
+    await expect(aprobarTransferencia(db, F.admin, t1.id, { ...base, precios: [{ detalleId: p1.items[0].id, precioUnitario: minimo }] })).resolves.toMatchObject({ estado: "APROBADA" });
+  });
+  it("el vendedor no puede dejar un producto bajo costo con un descuento", async () => {
+    await expect(crearVenta(db, F.caja1, { items: [{ presentacionId: F.pres.id, cantidad: 1, descuentoPct: 99, origen: "DIRECTA" }], tipoComprobante: "NOTA_VENTA", pagos: [{ medio: "EFECTIVO", monto: 1 }] }))
+      .rejects.toThrow(/Solo el administrador puede vender bajo costo/);
+  });
+});
+
+describe("Cuota de venta del mes", () => {
+  const mes = hoy().slice(0, 7);
+  it("guarda la cuota de la botica y de cada vendedor y calcula el avance", async () => {
+    const r = await guardarMetasMes(db, F.admin, { mes, botica: 1000, vendedores: [{ usuarioId: F.caja1.id, metaMes: 500, metaDiaria: 80 }, { usuarioId: F.caja2.id, metaMes: null }] });
+    const [{ total }] = await filas<{ total: number }>(db, sql`select coalesce(sum(total),0)::float as total from venta where estado = 'EMITIDA' and to_char(fecha at time zone 'America/Lima', 'YYYY-MM') = ${mes}`);
+    expect(r.botica.meta).toBe(1000);
+    expect(r.botica.vendido).toBeCloseTo(Number(total), 2);
+    expect(r.botica.faltante).toBe(Math.max(0, Math.round((1000 - Number(total)) * 100) / 100));
+    const c1 = r.vendedores.find((v) => v.usuarioId === F.caja1.id)!;
+    expect(c1).toMatchObject({ meta: 500, metaDiaria: 80 });
+    expect(r.vendedores.find((v) => v.usuarioId === F.caja2.id)!.meta).toBeNull();
+    expect(r.vendedores.some((v) => v.usuarioId === F.almacen.id)).toBe(false);
+    expect(r.sumaVendedores).toBe(500);
+    expect((await avanceDelMes(db, null))?.meta).toBe(1000);
+    expect((await avanceDelMes(db, F.caja1.id))?.meta).toBe(500);
+    expect(await avanceDelMes(db, F.caja2.id)).toBeNull();
+    // Guardar de nuevo reemplaza: sin cuota de botica, se borra.
+    const r2 = await guardarMetasMes(db, F.admin, { mes, botica: null, vendedores: [{ usuarioId: F.caja1.id, metaMes: 600 }] });
+    expect(r2.botica.meta).toBeNull();
+    expect((await metasDelMes(db, mes)).vendedores.find((v) => v.usuarioId === F.caja1.id)).toMatchObject({ meta: 600, metaDiaria: 80 });
+  });
+  it("rechaza metas inválidas y a quien no vende", async () => {
+    await expect(guardarMetasMes(db, F.admin, { mes, botica: null, vendedores: [{ usuarioId: F.almacen.id, metaMes: 100 }] })).rejects.toThrow(/Solo se asignan/);
+    for (const malo of [{ mes: "2026-13", botica: 10, vendedores: [] }, { mes, botica: 0, vendedores: [] }, { mes, botica: -5, vendedores: [] }]) expect(esquemaMetasMes.safeParse(malo).success).toBe(false);
+  });
+  it("muestra el cumplimiento mes a mes del año", async () => {
+    const anio = Number(mes.slice(0, 4));
+    const r = await cumplimientoCuotas(db, F.admin, { anio, usuarioId: F.caja1.id });
+    expect(r.meses).toHaveLength(12);
+    const actual = r.meses.find((m) => m.mes === mes)!;
+    expect(actual.meta).toBe(600);
+    expect(["EN_CURSO", "CUMPLIDA"]).toContain(actual.estado);
+    expect(r.resumen.mesesConCuota).toBe(1);
+    expect(r.opciones.some((o) => o.usuarioId === F.caja2.id)).toBe(true);
+    const propio = await cumplimientoCuotas(db, F.caja1, { anio, usuarioId: F.caja1.id });
+    expect(propio.opciones.map((o) => o.usuarioId)).toEqual([null, F.caja1.id]);
+    await expect(cumplimientoCuotas(db, F.caja1, { anio, usuarioId: F.caja2.id })).rejects.toThrow(/propia cuota/);
+    const siguiente = await cumplimientoCuotas(db, F.admin, { anio: anio + 1, usuarioId: null });
+    expect(siguiente.meses.every((m) => m.estado === "PENDIENTE")).toBe(true);
+  });
+});
+
+describe("Autoaprobación de salidas y entradas del administrador", () => {
+  const motivoSalida = async () => (await db.select().from(schema.motivo).where(and(eq(schema.motivo.tipo, "SALIDA"), eq(schema.motivo.requiereAprobacion, true))))[0];
+  let loteId = 0;
+  beforeAll(async () => {
+    const [l] = await db.select().from(schema.lote).where(and(eq(schema.lote.estado, "ACTIVO"), sql`${schema.lote.cantidad} >= 10`)).orderBy(schema.lote.id).limit(1);
+    loteId = l.id;
+  });
+  const cantidad = async (id: number) => (await db.select().from(schema.lote).where(eq(schema.lote.id, id)))[0].cantidad;
+  it("el administrador registra y aprueba en un paso: el stock se descuenta al instante", async () => {
+    const m = await motivoSalida();
+    const antes = await cantidad(loteId);
+    const r = await registrarMovimiento(db, F.admin, { motivoId: m.id, descripcion: "Baja directa del administrador", evidencia: "Acta 9", items: [{ loteId: loteId, unidades: 1 }], autoaprobar: true });
+    expect(r).toMatchObject({ estado: "APROBADA", requiereAprobacion: false, autoaprobado: true });
+    expect(await cantidad(loteId)).toBe(antes - 1);
+    const [mov] = await db.select().from(schema.movimientoInventario).where(eq(schema.movimientoInventario.id, r.id));
+    expect(mov.aprobadoPor).toBe(F.admin.id);
+    const [aud] = await db.select().from(schema.auditoria).where(and(eq(schema.auditoria.accion, "AUTOAPROBAR_MOVIMIENTO"), eq(schema.auditoria.entidadId, r.id)));
+    expect(aud).toBeTruthy();
+  });
+  it("el administrador puede autoaprobar o anular desde la bandeja lo que él registró; los demás no", async () => {
+    const m = await motivoSalida();
+    const antes = await cantidad(loteId);
+    const p = await registrarMovimiento(db, F.admin, { motivoId: m.id, descripcion: "Baja pendiente del administrador", evidencia: "Acta 10", items: [{ loteId: loteId, unidades: 1 }] });
+    expect(p.estado).toBe("PENDIENTE");
+    const [enLista] = (await listarMovimientos(db, F.admin, "PENDIENTE")).filter((x) => x.id === p.id);
+    expect(enLista).toMatchObject({ puedoAprobar: false, puedoAutoaprobar: true });
+    await decidirMovimiento(db, F.admin, p.id, { decision: "APROBAR" });
+    expect(await cantidad(loteId)).toBe(antes - 1);
+    const otra = await registrarMovimiento(db, F.admin, { motivoId: m.id, descripcion: "Baja que se anula después", evidencia: "Acta 11", items: [{ loteId: loteId, unidades: 1 }] });
+    await decidirMovimiento(db, F.admin, otra.id, { decision: "RECHAZAR", comentario: "Registrada por error" });
+    expect(await cantidad(loteId)).toBe(antes - 1);
+    // Quien no es administrador sigue sin poder autoaprobar.
+    await expect(registrarMovimiento(db, F.qf, { motivoId: m.id, descripcion: "Intento de autoaprobación", evidencia: "Acta 12", items: [{ loteId: loteId, unidades: 1 }], autoaprobar: true })).rejects.toThrow(/Solo el administrador/);
+    const q = await registrarMovimiento(db, F.qf, { motivoId: m.id, descripcion: "Baja del químico farmacéutico", evidencia: "Acta 13", items: [{ loteId: loteId, unidades: 1 }] });
+    expect((await listarMovimientos(db, F.qf, "PENDIENTE")).find((x) => x.id === q.id)?.puedoAutoaprobar).toBe(false);
+    await expect(decidirMovimiento(db, F.qf, q.id, { decision: "APROBAR" })).rejects.toThrow(/RN-09/);
+  });
+});
+
+describe("Reportes con filtros rápidos y columnas", () => {
+  it("cada reporte especial declara sus columnas y filtros, y oculta costos a quien no los ve", async () => {
+    for (const id of ["por-vencer", "stock-critico", "salidas-motivo", "cierres-caja"]) {
+      const r = await reporteEspecial(db, F.admin, id, {});
+      expect(r.columnas.length).toBeGreaterThan(2);
+      expect(r.filtros.length).toBeGreaterThan(0);
+      for (const fila of r.filas) for (const c of r.columnas) expect(c.codigo in fila).toBe(true);
+    }
+    const venc = await reporteEspecial(db, F.qf, "por-vencer", { desde: "2000-01-01", hasta: hoy() });
+    expect(venc.columnas.some((c) => c.codigo === "costoTotal")).toBe(false);
+    expect(venc.filas.every((f) => !("costoTotal" in f) && Number(f.dias) <= 0)).toBe(true);
+    const admin = await reporteEspecial(db, F.admin, "por-vencer", { desde: hoy(), hasta: sumarDias(hoy(), 90) });
+    expect(admin.columnas.some((c) => c.codigo === "costoTotal")).toBe(true);
+    expect(admin.filas.every((f) => Number(f.dias) >= 0 && Number(f.dias) <= 90)).toBe(true);
+  });
+  it("las ventas se filtran por laboratorio", async () => {
+    const [p] = await db.select().from(schema.producto).where(eq(schema.producto.id, F.vit.id));
+    const todos = await ejecutarReporte(db, ["ADMIN"], { agrupar: "laboratorio", metricas: ["ventas"], desde: sumarDias(hoy(), -365), hasta: hoy() });
+    if (!p.laboratorioId) return;
+    const uno = await ejecutarReporte(db, ["ADMIN"], { agrupar: "laboratorio", metricas: ["ventas"], desde: sumarDias(hoy(), -365), hasta: hoy(), filtros: { laboratorioId: String(p.laboratorioId) } });
+    expect(uno.filas.length).toBeLessThanOrEqual(1);
+    expect(todos.filas.length).toBeGreaterThanOrEqual(uno.filas.length);
   });
 });

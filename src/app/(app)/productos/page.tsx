@@ -89,7 +89,6 @@ export default function Productos() {
                       <td>
                         <span className="font-semibold">{p.nombre}</span>
                         <span className="block text-[12px] text-ink-3">{[p.principioActivo, p.concentracion, p.formaFarmaceutica, p.categoria].filter(Boolean).join(" · ")}</span>
-                        {p.condicionVenta !== "LIBRE" ? <Insignia tono="ambar" className="mt-1">{p.condicionVenta === "RECETA" ? "Con receta" : "Receta retenida"}</Insignia> : null}
                         {p.registroVence && p.registroVence < hoyLima() ? <Insignia tono="rojo" className="mt-1">Registro vencido</Insignia> : null}
                       </td>
                       <td className="text-ink-2">{p.laboratorio ?? "—"}</td>

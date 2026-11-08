@@ -19,6 +19,8 @@ export const esquemaMovimiento = z.object({
   descripcion: texto(10, "mínimo 10 caracteres"),
   evidencia: z.string().optional(),
   items: z.array(z.object({ loteId: z.number().int(), unidades: z.number().int().positive().max(1000000) })).min(1),
+  /** Solo el administrador: registra y aprueba en un paso, y el stock se mueve de inmediato. */
+  autoaprobar: z.boolean().optional(),
 });
 
 async function aplicar(tx: Db, movId: number, tipo: string, motivoCodigo: string, usuarioId: number) {
@@ -46,18 +48,21 @@ export async function registrarMovimiento(db: Db, user: Sesion, input: z.infer<t
     total += l.costoUnitario * it.unidades;
   }
   const { umbral_aprobacion_salida } = await parametros(db);
-  const requiere = m.requiereAprobacion || total > umbral_aprobacion_salida;
+  if (input.autoaprobar && !tieneRol(user.roles, "ADMIN")) throw new ErrorNegocio("SIN_PERMISO", "Solo el administrador puede aprobar sus propios movimientos.", 403);
+  const autoaprobado = !!input.autoaprobar && (m.requiereAprobacion || total > umbral_aprobacion_salida);
+  const requiere = !input.autoaprobar && (m.requiereAprobacion || total > umbral_aprobacion_salida);
   return db.transaction(async (tx) => {
     const [mov] = await tx.insert(movimientoInventario).values({
       motivoId: m.id, descripcion: input.descripcion, evidencia: input.evidencia ?? null, estado: requiere ? "PENDIENTE" : "APROBADA",
-      totalCosto: r4(total), registradoPor: user.id, decididoEn: requiere ? null : new Date(),
+      totalCosto: r4(total), registradoPor: user.id, decididoEn: requiere ? null : new Date(), aprobadoPor: autoaprobado ? user.id : null,
     }).returning();
     await tx.insert(movDetalle).values(input.items.map((it) => {
       const l = mapa.get(it.loteId)!;
       return { movimientoId: mov.id, productoId: l.productoId, loteId: l.id, unidades: it.unidades, costoUnitario: l.costoUnitario };
     }));
     if (!requiere) await aplicar(tx, mov.id, m.tipo, m.codigo, user.id);
-    return { id: mov.id, estado: mov.estado, requiereAprobacion: requiere, aprobador: requiere ? m.rolAprobador : null, totalCosto: r4(total) };
+    if (autoaprobado) await tx.insert(auditoria).values({ usuarioId: user.id, accion: "AUTOAPROBAR_MOVIMIENTO", entidad: "movimiento_inventario", entidadId: mov.id, detalle: { motivo: m.codigo, totalCosto: r4(total), alRegistrar: true } });
+    return { id: mov.id, estado: mov.estado, requiereAprobacion: requiere, autoaprobado, aprobador: requiere ? m.rolAprobador : null, totalCosto: r4(total) };
   });
 }
 
@@ -72,23 +77,31 @@ export async function listarMovimientos(db: Db, user: Sesion, estado?: string) {
   const ids = rows.map((r) => r.id);
   const det = ids.length ? await db.select({ movimientoId: movDetalle.movimientoId, producto: producto.nombre, lote: lote.numero, vencimiento: lote.vencimiento, unidades: movDetalle.unidades })
     .from(movDetalle).innerJoin(producto, eq(producto.id, movDetalle.productoId)).innerJoin(lote, eq(lote.id, movDetalle.loteId)).where(inArray(movDetalle.movimientoId, ids)) : [];
-  return rows.map((r) => ({ ...r, puedoAprobar: r.estado === "PENDIENTE" && r.registradoPorId !== user.id && tieneRol(user.roles, "ADMIN", r.rolAprobador), items: det.filter((d) => d.movimientoId === r.id) }));
+  const admin = tieneRol(user.roles, "ADMIN");
+  return rows.map((r) => ({
+    ...r,
+    puedoAprobar: r.estado === "PENDIENTE" && r.registradoPorId !== user.id && tieneRol(user.roles, "ADMIN", r.rolAprobador),
+    // El administrador puede aprobar (o anular) lo que él mismo registró; queda marcado como autoaprobado en la auditoría.
+    puedoAutoaprobar: r.estado === "PENDIENTE" && r.registradoPorId === user.id && admin,
+    items: det.filter((d) => d.movimientoId === r.id),
+  }));
 }
 
 export const esquemaDecision = z.object({ decision: z.enum(["APROBAR", "RECHAZAR"]), comentario: z.string().optional() });
 
-/** Quien registra una salida no puede aprobarla (RN-09). El stock solo se mueve al aprobar. */
+/** Quien registra una salida no puede aprobarla (RN-09), salvo el administrador con sus propios movimientos. El stock solo se mueve al aprobar. */
 export async function decidirMovimiento(db: Db, user: Sesion, id: number, input: z.infer<typeof esquemaDecision>) {
   const [mov] = await db.select().from(movimientoInventario).where(eq(movimientoInventario.id, id));
   if (!mov || mov.estado !== "PENDIENTE") throw new ErrorNegocio("ESTADO", "Este movimiento ya no está pendiente.");
   const [m] = await db.select().from(motivo).where(eq(motivo.id, mov.motivoId));
-  if (mov.registradoPor === user.id) throw new ErrorNegocio("SEGREGACION", "No puedes aprobar un movimiento que registraste tú (RN-09).", 403);
+  const propio = mov.registradoPor === user.id;
+  if (propio && !tieneRol(user.roles, "ADMIN")) throw new ErrorNegocio("SEGREGACION", "No puedes aprobar un movimiento que registraste tú (RN-09).", 403);
   if (!tieneRol(user.roles, "ADMIN", m.rolAprobador)) throw new ErrorNegocio("SIN_PERMISO", "Este motivo lo aprueba otro rol.", 403);
   if (input.decision === "RECHAZAR" && !input.comentario?.trim()) throw new ErrorNegocio("COMENTARIO", "Escribe el motivo del rechazo.");
   await db.transaction(async (tx) => {
     if (input.decision === "APROBAR") await aplicar(tx, id, m.tipo, m.codigo, user.id);
     await tx.update(movimientoInventario).set({ estado: input.decision === "APROBAR" ? "APROBADA" : "RECHAZADA", aprobadoPor: user.id, comentario: input.comentario ?? null, decididoEn: new Date() }).where(eq(movimientoInventario.id, id));
-    await tx.insert(auditoria).values({ usuarioId: user.id, accion: `${input.decision}_MOVIMIENTO`, entidad: "movimiento_inventario", entidadId: id });
+    await tx.insert(auditoria).values({ usuarioId: user.id, accion: propio && input.decision === "APROBAR" ? "AUTOAPROBAR_MOVIMIENTO" : `${input.decision}_MOVIMIENTO`, entidad: "movimiento_inventario", entidadId: id, ...(propio ? { detalle: { propio: true, comentario: input.comentario ?? null } } : {}) });
   });
   return { id, estado: input.decision === "APROBAR" ? "APROBADA" : "RECHAZADA" };
 }

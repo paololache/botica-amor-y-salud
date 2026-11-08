@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
-  pgTable, pgEnum, serial, integer, text, boolean, numeric, timestamp, date, jsonb, uniqueIndex, index, check,
+  pgTable, pgEnum, serial, integer, text, boolean, numeric, timestamp, date, jsonb, uniqueIndex, index, check, primaryKey,
 } from "drizzle-orm/pg-core";
 
 const money = (n: string) => numeric(n, { precision: 12, scale: 2, mode: "number" });
@@ -19,6 +19,7 @@ export const usuario = pgTable("usuario", {
   passwordHash: text("password_hash").notNull(),
   roles: rolEnum("roles").array().notNull(),
   activo: boolean("activo").notNull().default(true),
+  metaDiaria: money("meta_diaria"), // meta de venta del día en soles; null = la calcula el sistema con su promedio
   creadoEn: ts("creado_en").notNull().defaultNow(),
 }, (t) => [check("usuario_con_perfil", sql`cardinality(${t.roles}) > 0`)]);
 
@@ -94,6 +95,7 @@ export const sesionCaja = pgTable("sesion_caja", {
   diferencia: money("diferencia"),
   fondoSiguiente: money("fondo_siguiente"),
   retiro: money("retiro"),
+  pagosNoConfirmados: jsonb("pagos_no_confirmados").$type<string[]>(), // pagos virtuales que el cajero no validó al cerrar
   observacion: text("observacion"),
   validadoPor: integer("validado_por").references(() => usuario.id),
   estado: text("estado").notNull().default("ABIERTA"), // ABIERTA | CERRADA
@@ -125,8 +127,9 @@ export const correlativo = pgTable("correlativo", {
 
 export const venta = pgTable("venta", {
   id: serial("id").primaryKey(),
-  sesionId: integer("sesion_id").notNull().references(() => sesionCaja.id),
+  sesionId: integer("sesion_id").references(() => sesionCaja.id), // null: venta por transferencia, no pasa por caja
   usuarioId: integer("usuario_id").notNull().references(() => usuario.id),
+  canal: text("canal").notNull().default("MOSTRADOR"), // MOSTRADOR | TRANSFERENCIA
   clienteId: integer("cliente_id").references(() => cliente.id),
   tipoComprobante: comprobanteEnum("tipo_comprobante").notNull(),
   serie: text("serie").notNull(),
@@ -200,6 +203,41 @@ export const compraDetalle = pgTable("compra_detalle", {
   loteId: integer("lote_id").references(() => lote.id),
 });
 
+/** Venta de mercadería a otra botica: la registra el personal y la aprueba el propietario con el precio pactado. */
+export const transferencia = pgTable("transferencia", {
+  id: serial("id").primaryKey(),
+  serie: text("serie").notNull(),
+  numero: integer("numero").notNull(),
+  tipoDestino: text("tipo_destino").notNull().default("EMPRESA"), // EMPRESA: venta con factura | SUCURSAL: traslado sin venta
+  destino: text("destino").notNull(), // razón social o nombre del comprador, o nombre de la sucursal
+  destinoTipoDoc: text("destino_tipo_doc"), // RUC: factura | DNI: boleta (persona sin RUC)
+  destinoDoc: text("destino_ruc"),
+  motivo: text("motivo").notNull(),
+  estado: text("estado").notNull().default("PENDIENTE"), // PENDIENTE | APROBADA | RECHAZADA | ANULADA
+  registradoPor: integer("registrado_por").notNull().references(() => usuario.id),
+  registradoEn: ts("registrado_en").notNull().defaultNow(),
+  decididoPor: integer("decidido_por").references(() => usuario.id),
+  decididoEn: ts("decidido_en"),
+  comentario: text("comentario"),
+  vendedorId: integer("vendedor_id").references(() => usuario.id), // a quién se atribuye la venta
+  ventaId: integer("venta_id").references(() => venta.id),
+  medioPago: text("medio_pago"),
+  costoAdicional: money("costo_adicional"),
+  totalVenta: money("total_venta"),
+  costoTotal: money("costo_total"),
+}, (t) => [uniqueIndex("transferencia_doc_uq").on(t.serie, t.numero), index("transferencia_estado_idx").on(t.estado)]);
+
+export const transferenciaDetalle = pgTable("transferencia_detalle", {
+  id: serial("id").primaryKey(),
+  transferenciaId: integer("transferencia_id").notNull().references(() => transferencia.id),
+  productoId: integer("producto_id").notNull().references(() => producto.id),
+  loteId: integer("lote_id").references(() => lote.id), // null: se descuenta por FEFO al aprobar
+  unidades: integer("unidades").notNull(),
+  enCampana: boolean("en_campana").notNull().default(false),
+  precioUnitario: money("precio_unitario"),
+  costoUnitario: cost("costo_unitario"),
+}, (t) => [index("td_transferencia_idx").on(t.transferenciaId)]);
+
 export const motivo = pgTable("motivo", {
   id: serial("id").primaryKey(),
   codigo: text("codigo").notNull().unique(),
@@ -239,7 +277,7 @@ export const kardex = pgTable("kardex", {
   fecha: ts("fecha").notNull().defaultNow(),
   productoId: integer("producto_id").notNull().references(() => producto.id),
   loteId: integer("lote_id").references(() => lote.id),
-  tipo: text("tipo").notNull(), // VENTA | ANULACION_VENTA | COMPRA | SALIDA | ENTRADA | INVENTARIO_INICIAL | CORRECCION_COSTO | ANULACION_COMPRA
+  tipo: text("tipo").notNull(), // VENTA | ANULACION_VENTA | COMPRA | SALIDA | ENTRADA | INVENTARIO_INICIAL | CORRECCION_COSTO | ANULACION_COMPRA | TRANSFERENCIA
   motivo: text("motivo"),
   documentoTipo: text("documento_tipo").notNull(),
   documentoId: integer("documento_id"),
@@ -259,6 +297,7 @@ export const campana = pgTable("campana", {
   productoId: integer("producto_id").notNull().references(() => producto.id),
   loteId: integer("lote_id").references(() => lote.id),
   porcentaje: numeric("porcentaje", { precision: 5, scale: 2, mode: "number" }).notNull(),
+  precios: jsonb("precios").$type<Record<string, number> | null>(), // precio de campaña por presentación (id → S/), reemplaza al de lista mientras está activa
   inicio: date("inicio", { mode: "string" }).notNull(),
   fin: date("fin", { mode: "string" }).notNull(),
   estado: text("estado").notNull(), // PROGRAMADA | ACTIVA | PAUSADA | FINALIZADA
@@ -368,3 +407,21 @@ export const auditoria = pgTable("auditoria", {
   detalle: jsonb("detalle"),
   fecha: ts("fecha").notNull().defaultNow(),
 });
+
+/** Cuántas veces abrió cada usuario cada sección: alimenta los accesos rápidos del panel. */
+export const usoModulo = pgTable("uso_modulo", {
+  usuarioId: integer("usuario_id").notNull().references(() => usuario.id, { onDelete: "cascade" }),
+  ruta: text("ruta").notNull(),
+  visitas: integer("visitas").notNull().default(0),
+  ultima: ts("ultima").notNull().defaultNow(),
+}, (t) => [primaryKey({ columns: [t.usuarioId, t.ruta] })]);
+
+/** Cuota de venta del mes: la general de la botica (usuario_id nulo) o la de cada vendedor. */
+export const metaMensual = pgTable("meta_mensual", {
+  id: serial("id").primaryKey(),
+  mes: text("mes").notNull(), // YYYY-MM
+  usuarioId: integer("usuario_id").references(() => usuario.id, { onDelete: "cascade" }),
+  monto: money("monto").notNull(),
+  actualizadoPor: integer("actualizado_por").references(() => usuario.id),
+  actualizadoEn: ts("actualizado_en").notNull().defaultNow(),
+}, (t) => [uniqueIndex("meta_mensual_mes_usuario_uq").on(t.mes, sql`coalesce(${t.usuarioId}, 0)`)]);

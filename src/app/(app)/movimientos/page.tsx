@@ -8,7 +8,7 @@ import { useUsuario } from "@/components/shell";
 import { tieneRol } from "@/lib/permisos";
 
 type Motivo = { id: number; codigo: string; nombre: string; tipo: string; requiereAprobacion: boolean; rolAprobador: string; requiereEvidencia: boolean };
-type Mov = { id: number; motivo: string; tipo: string; rolAprobador: string; descripcion: string; evidencia: string | null; estado: string; totalCosto?: number; fecha: string; registradoPor: string; comentario: string | null; puedoAprobar: boolean; items: { producto: string; lote: string; vencimiento: string; unidades: number }[] };
+type Mov = { id: number; motivo: string; tipo: string; rolAprobador: string; descripcion: string; evidencia: string | null; estado: string; totalCosto?: number; fecha: string; registradoPor: string; comentario: string | null; puedoAprobar: boolean; puedoAutoaprobar?: boolean; items: { producto: string; lote: string; vencimiento: string; unidades: number }[] };
 type Lote = { id: number; numero: string; vencimiento: string; cantidad: number; estado: string };
 type Linea = { producto: string; lotes: Lote[]; loteId: number; unidades: string };
 
@@ -16,7 +16,7 @@ export default function Movimientos() {
   const u = useUsuario();
   const [tab, setTab] = useState<"nuevo" | "bandeja" | "historial">(tieneRol(u.roles, "ADMIN", "QF") ? "bandeja" : "nuevo");
   const pend = useDatos<Mov[]>("/api/movimientos?estado=PENDIENTE");
-  const porAprobar = (pend.datos ?? []).filter((m) => m.puedoAprobar).length;
+  const porAprobar = (pend.datos ?? []).filter((m) => m.puedoAprobar || m.puedoAutoaprobar).length;
   return (
     <div>
       <Encabezado titulo="Salidas y entradas" bajada="Toda baja de stock sin venta lleva un motivo del catálogo; el stock solo se mueve al aprobar." />
@@ -32,6 +32,8 @@ export default function Movimientos() {
 
 function Nuevo({ alTerminar }: { alTerminar: () => void }) {
   const avisar = useAviso();
+  const u = useUsuario();
+  const esAdmin = tieneRol(u.roles, "ADMIN");
   const motivos = useDatos<Motivo[]>("/api/motivos");
   const [motivoId, setMotivoId] = useState<number | null>(null);
   const [descripcion, setDescripcion] = useState("");
@@ -40,11 +42,11 @@ function Nuevo({ alTerminar }: { alTerminar: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [ocupado, setOcupado] = useState(false);
   const m = motivos.datos?.find((x) => x.id === motivoId);
-  const enviar = async () => {
+  const enviar = async (autoaprobar = false) => {
     setOcupado(true); setError(null);
     try {
-      const r = await api<{ id: number; estado: string; requiereAprobacion: boolean; aprobador: string | null }>("/api/movimientos", { cuerpo: { motivoId, descripcion, evidencia: evidencia || undefined, items: lineas.map((l) => ({ loteId: l.loteId, unidades: Number(l.unidades) })) } });
-      avisar("ok", r.requiereAprobacion ? `MOV-${String(r.id).padStart(5, "0")} enviado a aprobación (${r.aprobador === "QF" ? "químico farmacéutico" : "administrador"}).` : `MOV-${String(r.id).padStart(5, "0")} aplicado al kardex.`);
+      const r = await api<{ id: number; estado: string; requiereAprobacion: boolean; autoaprobado: boolean; aprobador: string | null }>("/api/movimientos", { cuerpo: { motivoId, descripcion, evidencia: evidencia || undefined, items: lineas.map((l) => ({ loteId: l.loteId, unidades: Number(l.unidades) })), ...(autoaprobar ? { autoaprobar: true } : {}) } });
+      avisar("ok", r.autoaprobado ? `MOV-${String(r.id).padStart(5, "0")} registrado y aprobado: el stock ya se ${m?.tipo === "ENTRADA" ? "sumó" : "descontó"}.` : r.requiereAprobacion ? `MOV-${String(r.id).padStart(5, "0")} enviado a aprobación (${r.aprobador === "QF" ? "químico farmacéutico" : "administrador"}).` : `MOV-${String(r.id).padStart(5, "0")} aplicado al kardex.`);
       setLineas([]); setDescripcion(""); setEvidencia(""); alTerminar();
     } catch (e) { setError((e as Error).message); } finally { setOcupado(false); }
   };
@@ -93,7 +95,12 @@ function Nuevo({ alTerminar }: { alTerminar: () => void }) {
         ) : <Vacio titulo="Agrega los productos del movimiento">Elige el lote exacto: la baja se valoriza al costo de ese lote.</Vacio>}
         <div className="px-5 py-4 border-t border-foil flex items-center justify-between gap-3">
           {error ? <p className="text-sm text-rojo">{error}</p> : <span className="text-[13px] text-ink-2">{m ? `Motivo: ${m.nombre}` : "Elige un motivo"}</span>}
-          <Boton variante="amor" cargando={ocupado} disabled={!m || descripcion.trim().length < 10 || !lineas.length} onClick={enviar}>{m?.requiereAprobacion ? "Enviar a aprobación" : "Registrar"}</Boton>
+          {esAdmin ? (
+            <div className="flex flex-wrap justify-end gap-2">
+              {m?.requiereAprobacion && m.rolAprobador === "QF" ? <Boton variante="borde" cargando={ocupado} disabled={descripcion.trim().length < 10 || !lineas.length} onClick={() => enviar(false)}>Enviar al QF</Boton> : null}
+              <Boton variante="amor" cargando={ocupado} disabled={!m || descripcion.trim().length < 10 || !lineas.length} onClick={() => enviar(true)} title="Como administrador, lo apruebas tú mismo y el stock se mueve al instante">Registrar y aprobar</Boton>
+            </div>
+          ) : <Boton variante="amor" cargando={ocupado} disabled={!m || descripcion.trim().length < 10 || !lineas.length} onClick={() => enviar(false)}>{m?.requiereAprobacion ? "Enviar a aprobación" : "Registrar"}</Boton>}
         </div>
       </Tarjeta>
     </div>
@@ -105,9 +112,13 @@ function Lista({ estado, soloMias, recargarPadre }: { estado?: string; soloMias?
   const u = useUsuario();
   const { datos, recargar } = useDatos<Mov[]>(`/api/movimientos${estado ? `?estado=${estado}` : ""}`);
   const [coment, setComent] = useState<Record<number, string>>({});
-  const lista = (datos ?? []).filter((m) => !soloMias || m.puedoAprobar);
+  const lista = (datos ?? []).filter((m) => !soloMias || m.puedoAprobar || m.puedoAutoaprobar);
   const decidir = async (m: Mov, decision: "APROBAR" | "RECHAZAR") => {
-    try { await api(`/api/movimientos/${m.id}/decidir`, { cuerpo: { decision, comentario: coment[m.id] } }); avisar("ok", decision === "APROBAR" ? "Aprobado: el stock ya se descontó." : "Rechazado: el stock no se movió."); recargar(); recargarPadre?.(); }
+    try {
+      await api(`/api/movimientos/${m.id}/decidir`, { cuerpo: { decision, comentario: coment[m.id] } });
+      avisar("ok", decision === "APROBAR" ? `Aprobado: el stock ya se ${m.tipo === "ENTRADA" ? "sumó" : "descontó"}.` : m.puedoAutoaprobar ? "Anulado: el stock no se movió." : "Rechazado: el stock no se movió.");
+      recargar(); recargarPadre?.();
+    }
     catch (e) { avisar("error", (e as Error).message); }
   };
   if (!datos) return <Cargando />;
@@ -131,6 +142,15 @@ function Lista({ estado, soloMias, recargarPadre }: { estado?: string; soloMias?
               <Entrada className="flex-1 min-w-[220px]" placeholder="Comentario (obligatorio para rechazar)" value={coment[m.id] ?? ""} onChange={(e) => setComent({ ...coment, [m.id]: e.target.value })} />
               <Boton variante="borde" onClick={() => decidir(m, "RECHAZAR")}>Rechazar</Boton>
               <Boton onClick={() => decidir(m, "APROBAR")}>Aprobar</Boton>
+            </div>
+          ) : m.puedoAutoaprobar ? (
+            <div className="mt-4 rounded-2xl bg-foil/70 p-3">
+              <p className="text-[12.5px] text-ink-2 mb-2">Lo registraste tú. Como administrador puedes aprobarlo tú mismo; quedará marcado como autoaprobado en la auditoría.</p>
+              <div className="flex flex-wrap gap-2">
+                <Entrada className="flex-1 min-w-[220px]" placeholder="Comentario (obligatorio para anular)" value={coment[m.id] ?? ""} onChange={(e) => setComent({ ...coment, [m.id]: e.target.value })} />
+                <Boton variante="borde" disabled={!(coment[m.id] ?? "").trim()} onClick={() => decidir(m, "RECHAZAR")}>Anular</Boton>
+                <Boton variante="amor" onClick={() => decidir(m, "APROBAR")}>Autoaprobar</Boton>
+              </div>
             </div>
           ) : null}
         </Tarjeta>
