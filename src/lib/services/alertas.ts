@@ -8,7 +8,7 @@ import { diasEntre, ErrorNegocio, hoy as hoyLima, sumarDias } from "../util";
 import { parametros } from "./parametros";
 import { campanasVigentes } from "./campanas";
 
-const { alerta, lote, motivo, movimientoInventario, movDetalle, auditoria } = schema;
+const { alerta, lote, motivo, movimientoInventario, movDetalle, auditoria, parametro } = schema;
 
 export type TipoAlerta =
   | "AGOTADO" | "POR_TERMINARSE" | "BAJO_MINIMO" | "POR_VENCER" | "VENCIDO" | "SIN_ROTACION"
@@ -33,11 +33,35 @@ export const TIPOS: Record<TipoAlerta, { nombre: string; roles: Rol[]; grupo: "s
 
 type Nueva = { clave: string; tipo: TipoAlerta; severidad: "CRITICA" | "ALTA" | "INFO"; titulo: string; detalle: string; referenciaTipo?: string; referenciaId?: number; valor?: number };
 
+const ULTIMA_EVALUACION = "_alertas_evaluadas_en";
+
+const marcarEvaluacion = (db: Db) =>
+  db.insert(parametro).values({ clave: ULTIMA_EVALUACION, valor: String(Date.now()), descripcion: "Uso interno: última vez que se recalcularon las alertas" })
+    .onConflictDoUpdate({ target: parametro.clave, set: { valor: String(Date.now()) } });
+
 /** Recalcula todas las alertas; el candado evita alertas duplicadas si varios paneles se abren a la vez. */
 export async function evaluarAlertas(db: Db) {
   return db.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(727001)`);
-    return calcularAlertas(tx);
+    const r = await calcularAlertas(tx);
+    await marcarEvaluacion(tx);
+    return r;
+  });
+}
+
+/**
+ * Para el panel: recalcula solo si pasaron unos minutos desde la última vez y nadie más lo está haciendo.
+ * Así abrir el panel no espera el recálculo completo en cada visita (en producción cada consulta cruza la red hasta la base).
+ */
+export async function evaluarAlertasSiToca(db: Db, cadaMs = 3 * 60_000) {
+  const [u] = await db.select({ valor: parametro.valor }).from(parametro).where(eq(parametro.clave, ULTIMA_EVALUACION));
+  if (u && Date.now() - Number(u.valor) < cadaMs) return null;
+  return db.transaction(async (tx) => {
+    const [l] = await filas<{ ok: boolean }>(tx, sql`select pg_try_advisory_xact_lock(727001) as ok`);
+    if (!l?.ok) return null; // otro panel ya las está recalculando: se muestran las actuales
+    const r = await calcularAlertas(tx);
+    await marcarEvaluacion(tx);
+    return r;
   });
 }
 
@@ -119,17 +143,27 @@ async function calcularAlertas(db: Db) {
   const porClave = new Map(existentes.map((e) => [e.clave, e]));
   const vistas = new Set<string>();
   const insertar: (typeof alerta.$inferInsert)[] = [];
+  const cambios: { id: number; n: Nueva; reabrir: boolean }[] = [];
   for (const n of nuevas) {
     vistas.add(n.clave);
     const e = porClave.get(n.clave);
     if (!e) insertar.push({ ...n, referenciaTipo: n.referenciaTipo ?? null, referenciaId: n.referenciaId ?? null, valor: n.valor ?? null });
-    else if (e.tipo !== n.tipo || e.severidad !== n.severidad || e.titulo !== n.titulo || e.detalle !== n.detalle)
-      await db.update(alerta).set({ tipo: n.tipo, severidad: n.severidad, titulo: n.titulo, detalle: n.detalle, valor: n.valor ?? null, actualizadaEn: new Date(), ...(e.tipo !== n.tipo ? { estado: "ABIERTA" } : {}) }).where(eq(alerta.id, e.id));
+    else if (e.tipo !== n.tipo || e.severidad !== n.severidad || e.titulo !== n.titulo || e.detalle !== n.detalle) cambios.push({ id: e.id, n, reabrir: e.tipo !== n.tipo });
+  }
+  // Los cambios van en lotes de una sola sentencia: los textos ("vence en N días", "vende X und./día") cambian a diario o con cada venta.
+  for (let i = 0; i < cambios.length; i += 500) {
+    const valores = cambios.slice(i, i + 500).map((c) =>
+      sql`(${c.id}::int, ${c.n.tipo}::text, ${c.n.severidad}::text, ${c.n.titulo}::text, ${c.n.detalle}::text, ${c.n.valor ?? null}::numeric, ${c.reabrir}::boolean)`);
+    await db.execute(sql`
+      update alerta a set tipo = v.tipo, severidad = v.severidad, titulo = v.titulo, detalle = v.detalle, valor = v.valor, actualizada_en = now(),
+        estado = case when v.reabrir then 'ABIERTA' else a.estado end
+      from (values ${sql.join(valores, sql`, `)}) as v(id, tipo, severidad, titulo, detalle, valor, reabrir)
+      where a.id = v.id`);
   }
   for (let i = 0; i < insertar.length; i += 500) await db.insert(alerta).values(insertar.slice(i, i + 500));
   const cerrar = existentes.filter((e) => !vistas.has(e.clave)).map((e) => e.id);
   for (let i = 0; i < cerrar.length; i += 500) await db.update(alerta).set({ estado: "CERRADA", actualizadaEn: new Date() }).where(inArray(alerta.id, cerrar.slice(i, i + 500)));
-  return { evaluadas: nuevas.length, nuevas: insertar.length, cerradas: cerrar.length };
+  return { evaluadas: nuevas.length, nuevas: insertar.length, actualizadas: cambios.length, cerradas: cerrar.length };
 }
 
 function tiposDeRoles(roles: readonly Rol[]): TipoAlerta[] {

@@ -7,7 +7,7 @@ import { filas } from "../sqlrows";
 import { ErrorNegocio, esFechaValida, hoy as hoyLima, inicioDiaLima, r2, sumarDias } from "../util";
 import { accesosFrecuentes } from "./accesos";
 import { avanceDelMes, metaDelDia } from "./metas";
-import { alertasDelRol, evaluarAlertas } from "./alertas";
+import { alertasDelRol, evaluarAlertasSiToca } from "./alertas";
 import { estadoCaja } from "./caja";
 import { misComisiones } from "./comisiones";
 import { tarjetasPanel } from "./reportes";
@@ -65,7 +65,7 @@ export async function historicoVentas(db: Db, user: Sesion, q: z.infer<typeof es
 
 export async function panel(db: Db, user: Sesion) {
   const hoy = hoyLima();
-  await evaluarAlertas(db);
+  await evaluarAlertasSiToca(db);
   const propias = !tieneRol(user.roles, "ADMIN", "CONTADOR");
   const ventasDe = async (desde: string) => {
     const cond = [eq(venta.estado, "EMITIDA"), gte(venta.fecha, inicioDiaLima(desde))];
@@ -73,8 +73,14 @@ export async function panel(db: Db, user: Sesion) {
     const [r] = await db.select({ total: sql<number>`coalesce(sum(${venta.total}),0)`.mapWith(Number), tickets: sql<number>`count(*)`.mapWith(Number) }).from(venta).where(and(...cond));
     return { total: r2(r?.total ?? 0), tickets: r?.tickets ?? 0 };
   };
-  const [dia, mes, alertas, caja, comisiones, tarjetas, accesos, meta, cuota] = await Promise.all([
-    ventasDe(hoy), ventasDe(hoy.slice(0, 8) + "01"), alertasDelRol(db, user.roles, { limite: 0 }),
+  const ventasAyer = async () => {
+    const cond = [eq(venta.estado, "EMITIDA"), gte(venta.fecha, inicioDiaLima(sumarDias(hoy, -1))), sql`${venta.fecha} < ${inicioDiaLima(hoy).toISOString()}`];
+    if (propias) cond.push(eq(venta.usuarioId, user.id));
+    const [r] = await db.select({ total: sql<number>`coalesce(sum(${venta.total}),0)`.mapWith(Number) }).from(venta).where(and(...cond));
+    return r2(r?.total ?? 0);
+  };
+  const [dia, mes, ayer, alertas, caja, comisiones, tarjetas, accesos, meta, cuota] = await Promise.all([
+    ventasDe(hoy), ventasDe(hoy.slice(0, 8) + "01"), ventasAyer(), alertasDelRol(db, user.roles, { limite: 0 }),
     tieneRol(user.roles, "ADMIN", "CAJERO", "VENDEDOR", "QF") ? estadoCaja(db, user) : Promise.resolve(null),
     tieneRol(user.roles, "CAJERO", "VENDEDOR", "QF") ? misComisiones(db, user.id) : Promise.resolve(null),
     tarjetasPanel(db, user.roles),
@@ -83,11 +89,5 @@ export async function panel(db: Db, user: Sesion) {
     // La cuota del mes: el administrador y el contador ven la de la botica; quien vende, la suya.
     tieneRol(user.roles, "ADMIN", "CONTADOR") ? avanceDelMes(db, null) : tieneRol(user.roles, "CAJERO", "VENDEDOR", "QF") ? avanceDelMes(db, user.id) : Promise.resolve(null),
   ]);
-  const ayer = await (async () => {
-    const cond = [eq(venta.estado, "EMITIDA"), gte(venta.fecha, inicioDiaLima(sumarDias(hoy, -1))), sql`${venta.fecha} < ${inicioDiaLima(hoy).toISOString()}`];
-    if (propias) cond.push(eq(venta.usuarioId, user.id));
-    const [r] = await db.select({ total: sql<number>`coalesce(sum(${venta.total}),0)`.mapWith(Number) }).from(venta).where(and(...cond));
-    return r2(r?.total ?? 0);
-  })();
   return { hoy, ventas: { dia, mes, ayer, propias }, alertas, caja: caja ? { sesion: caja.sesion, resumen: caja.resumen } : null, comisiones, tarjetas, accesos, meta, cuota: cuota ? { ...cuota, deBotica: tieneRol(user.roles, "ADMIN", "CONTADOR") } : null };
 }
