@@ -71,7 +71,7 @@ export async function sembrar(db: Db, opciones: { reset?: boolean } = {}): Promi
   const [{ n }] = await db.select({ n: sql<number>`count(*)`.mapWith(Number) }).from(schema.usuario);
   if (n > 0) {
     if (!opciones.reset) return "La base ya tiene datos. Usa SEED_RESET=1 para reiniciarla.";
-    await db.execute(sql`truncate table meta_mensual, uso_modulo, transferencia_detalle, transferencia, auditoria, reporte_guardado, metrica, parametro, alerta, liquidacion_mensual, comision_diaria, comision, complemento, campana, kardex, mov_detalle, movimiento_inventario, motivo, compra_detalle, compra, proveedor, venta_pago, venta_detalle, venta, correlativo, cliente, movimiento_caja, sesion_caja, caja, lote, presentacion, producto, laboratorio, categoria, usuario restart identity cascade`);
+    await db.execute(sql`truncate table regularizacion_cierre, meta_mensual, uso_modulo, transferencia_detalle, transferencia, auditoria, reporte_guardado, metrica, parametro, alerta, liquidacion_mensual, comision_diaria, comision, complemento, campana, kardex, mov_detalle, movimiento_inventario, motivo, compra_detalle, compra, proveedor, venta_pago, venta_detalle, venta, correlativo, cliente, movimiento_caja, sesion_caja, caja, lote, presentacion, producto, laboratorio, categoria, usuario restart identity cascade`);
   }
   const t0 = Date.now();
   const hoy = hoyLima();
@@ -165,11 +165,11 @@ export async function sembrar(db: Db, opciones: { reset?: boolean } = {}): Promi
     { codigo: "DEVOLUCION_CLIENTE", nombre: "Devolución de cliente", tipo: "ENTRADA", rolAprobador: "ADMIN" },
   ]);
   await db.insert(schema.metrica).values([
-    { codigo: "ticket_promedio", nombre: "Ticket promedio", formula: "ventas / tickets", unidad: "SOLES", roles: ["ADMIN", "QF", "CONTADOR"], enPanel: true, creadoPor: U.admin.id },
+    { codigo: "ticket_promedio", nombre: "Venta promedio", formula: "ventas / tickets", unidad: "SOLES", roles: ["ADMIN", "QF", "CONTADOR"], enPanel: true, creadoPor: U.admin.id },
     { codigo: "tasa_complemento", nombre: "Tasa de complemento", formula: "tickets_complemento / tickets * 100", unidad: "PORCENTAJE", roles: ["ADMIN", "QF"], enPanel: true, creadoPor: U.admin.id },
     { codigo: "ventas_sin_igv", nombre: "Ventas sin IGV", formula: "ventas / 1.18", unidad: "SOLES", roles: ["ADMIN", "CONTADOR"], creadoPor: U.admin.id },
     { codigo: "margen_pct", nombre: "Margen bruto %", formula: "(ventas / 1.18 - costo_ventas) / (ventas / 1.18) * 100", unidad: "PORCENTAJE", roles: ["ADMIN"], enPanel: true, creadoPor: U.admin.id },
-    { codigo: "unidades_por_ticket", nombre: "Unidades por ticket", formula: "unidades / tickets", unidad: "NUMERO", roles: ["ADMIN", "QF"], creadoPor: U.admin.id },
+    { codigo: "unidades_por_ticket", nombre: "Unidades por venta", formula: "unidades / tickets", unidad: "NUMERO", roles: ["ADMIN", "QF"], creadoPor: U.admin.id },
   ]);
   const porNombre = (s: string) => prods.find((p) => p.base.nombre.startsWith(s))!;
   const prob = porNombre("Probiótico"), vitc = porNombre("Vitamina C"), zinc = porNombre("Zinc"), toall = porNombre("Toallitas"), suero = porNombre("Suero oral"), compB = porNombre("Complejo B");

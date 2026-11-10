@@ -156,7 +156,7 @@ export default function PanelPrincipal() {
               <p className="text-[13px] font-semibold text-ink-2">{datos.ventas.propias ? "Tus ventas de hoy" : "Ventas de hoy"}</p>
               <p className="cifra text-[44px] leading-none mt-2">{soles(datos.ventas.dia.total)}</p>
               <div className="flex flex-wrap items-center gap-2 mt-3 text-[13px] text-ink-2">
-                <span>{numero(datos.ventas.dia.tickets)} tickets</span>
+                <span>{numero(datos.ventas.dia.tickets)} {datos.ventas.dia.tickets === 1 ? "venta" : "ventas"}</span>
                 {variacion !== null ? <Insignia tono={variacion >= 0 ? "ok" : "ambar"}>{variacion >= 0 ? "+" : ""}{variacion.toFixed(0)}% vs. ayer</Insignia> : null}
               </div>
               {datos.meta?.objetivo ? <div className="mt-4"><BarraMeta meta={datos.meta} /></div> : null}
@@ -184,7 +184,7 @@ export default function PanelPrincipal() {
                 <span className={`size-10 rounded-xl grid place-items-center ${datos.caja.sesion ? "bg-ok-claro text-ok" : "bg-foil text-ink-3"}`}><Wallet size={19} /></span>
                 <div className="flex-1">
                   <p className="font-semibold">{datos.caja.sesion ? `${datos.caja.sesion.caja} abierta` : "Caja cerrada"}</p>
-                  <p className="text-[13px] text-ink-2">{datos.caja.sesion ? `Turno ${datos.caja.sesion.turno.toLowerCase()} · desde ${fechaHora(datos.caja.sesion.abiertaEn)} · ${datos.caja.resumen?.tickets ?? 0} tickets` : "Ábrela para empezar a vender"}</p>
+                  <p className="text-[13px] text-ink-2">{datos.caja.sesion ? `Turno ${datos.caja.sesion.turno.toLowerCase()} · desde ${fechaHora(datos.caja.sesion.abiertaEn)} · ${datos.caja.resumen?.tickets ?? 0} ${(datos.caja.resumen?.tickets ?? 0) === 1 ? "venta" : "ventas"}` : "Ábrela para empezar a vender"}</p>
                 </div>
                 <Link href="/caja"><Boton tam="sm" variante={datos.caja.sesion ? "borde" : "petroleo"}>{datos.caja.sesion ? "Ver" : "Abrir caja"}</Boton></Link>
               </div>

@@ -5,6 +5,7 @@ import { api, useDatos, soles, fechaCorta, hoyLima } from "@/lib/cliente";
 import { Boton, Cargando, Encabezado, Entrada, Insignia, Pestanas, Tarjeta, Vacio, useAviso } from "@/components/ui";
 import { useUsuario } from "@/components/shell";
 import { tieneRol } from "@/lib/permisos";
+import { HistoricoComisiones } from "@/components/historico-comisiones";
 
 type Mias = { hoy: number; lineasHoy: number; mes: number; mesActual: string; dias: { fecha: string; total: number; lineas: number }[]; liquidaciones: { id: number; mes: string; total: number; estado: string; pagadoEn: string | null }[] };
 type Mes = { mes: string; cerrable: boolean; finDeMes: string; vendedores: { usuarioId: number; nombre: string; total: number; lineas: number; dias: number; liquidacion: { id: number; estado: string; total: number; pagadoEn: string | null } | null }[] };
@@ -27,6 +28,7 @@ export default function Comisiones() {
 }
 
 function Mias() {
+  const u = useUsuario();
   const { datos } = useDatos<Mias>("/api/comisiones/mias");
   if (!datos) return <Cargando alto="h-80" />;
   const max = Math.max(1, ...datos.dias.map((d) => d.total));
@@ -37,7 +39,8 @@ function Mias() {
         <div className="tarjeta p-5 bg-[linear-gradient(160deg,#fff,#fdf0f5)]"><p className="text-[13px] font-semibold text-ink-2">Hoy</p><p className="cifra text-[42px] text-amor-2 leading-none mt-2">{soles(datos.hoy)}</p><p className="text-[12.5px] text-ink-3 mt-2">{datos.lineasHoy} productos en promoción vendidos</p></div>
         <div className="tarjeta p-5"><p className="text-[13px] font-semibold text-ink-2">Acumulado de {nombreMes(datos.mesActual)}</p><p className="cifra text-[42px] leading-none mt-2">{soles(datos.mes)}</p><p className="text-[12.5px] text-ink-3 mt-2">Se paga al cierre de mes</p></div>
       </div>
-      <Tarjeta titulo="Día por día">
+      <div className="mb-6"><HistoricoComisiones usuarioId={u.id} /></div>
+      <Tarjeta titulo="Día por día del mes">
         {datos.dias.length ? (
           <ul className="px-5 pb-5 space-y-2.5">{datos.dias.map((d) => (
             <li key={d.fecha} className="grid grid-cols-[90px_1fr_90px] items-center gap-3 text-[13.5px]"><span className="text-ink-2">{fechaCorta(d.fecha)}</span><div className="barra"><span style={{ width: `${(d.total / max) * 100}%`, background: "var(--color-amor)" }} /></div><span className="text-right font-semibold">{soles(d.total)}</span></li>
@@ -90,6 +93,7 @@ function Administracion() {
                 ))}</tbody></table>
             ) : <Vacio titulo="Sin comisiones en este mes" />}
           </Tarjeta>
+          <div className="mt-6"><HistoricoComisiones titulo="Comisiones en el tiempo" /></div>
         </>
       )}
     </div>

@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { estadoInicialCpe } from "./sunat";
 import { z } from "zod";
 import { schema, type Db } from "@/db";
 import type { Sesion } from "../auth";
@@ -20,7 +21,8 @@ export const esquemaTransferencia = z.object({
   destinoTipoDoc: z.enum(["RUC", "DNI"]).optional(),
   destinoDoc: z.string().trim().optional(),
   motivo: texto(5, "escribe el motivo (mínimo 5 caracteres)").max(250),
-  items: z.array(z.object({ productoId: id, loteId: id.nullable().optional(), unidades: z.number().int().positive().max(1000000) })).min(1, "agrega al menos un producto").max(100),
+  // Cada línea sale de un lote elegido: la transferencia queda asociada al número de lote y su registro sanitario (sin descuento automático).
+  items: z.array(z.object({ productoId: id, loteId: z.number({ required_error: "elige el lote de cada producto", invalid_type_error: "elige el lote de cada producto" }).int().positive().max(2147483647), unidades: z.number().int().positive().max(1000000) })).min(1, "agrega al menos un producto").max(100),
 }).refine((t) => t.tipoDestino === "SUCURSAL" || (t.destinoTipoDoc === "RUC" ? /^(10|20)\d{9}$/.test(t.destinoDoc ?? "") : t.destinoTipoDoc === "DNI" && /^\d{8}$/.test(t.destinoDoc ?? "")),
   { message: "escribe un RUC de 11 dígitos (empieza con 10 o 20) o un DNI de 8 dígitos", path: ["destinoDoc"] });
 
@@ -50,11 +52,12 @@ async function stockVigente(db: Db, ids: number[]) {
 
 /** El personal registra qué sale, de qué lote y cuánto; el stock no se mueve hasta que el propietario aprueba con el precio. */
 export async function registrarTransferencia(db: Db, user: Sesion, input: z.infer<typeof esquemaTransferencia>) {
-  // El mismo producto y lote agregado dos veces se suma en una sola línea; sin lote, sale por FEFO.
-  const lineas = new Map<string, { productoId: number; loteId: number | null; unidades: number }>();
+  if (input.items.some((it) => !it.loteId)) throw new ErrorNegocio("LOTE_REQUERIDO", "Elige el lote de cada producto: la transferencia sale de un lote determinado.", 422);
+  // El mismo producto y lote agregado dos veces se suma en una sola línea.
+  const lineas = new Map<string, { productoId: number; loteId: number; unidades: number }>();
   for (const it of input.items) {
-    const k = `${it.productoId}:${it.loteId ?? ""}`;
-    const l = lineas.get(k) ?? { productoId: it.productoId, loteId: it.loteId ?? null, unidades: 0 };
+    const k = `${it.productoId}:${it.loteId}`;
+    const l = lineas.get(k) ?? { productoId: it.productoId, loteId: it.loteId, unidades: 0 };
     l.unidades += it.unidades; lineas.set(k, l);
   }
   const ids = [...new Set([...lineas.values()].map((l) => l.productoId))];
@@ -62,10 +65,10 @@ export async function registrarTransferencia(db: Db, user: Sesion, input: z.infe
   if (prods.length !== ids.length) throw new ErrorNegocio("PRODUCTO", "Uno de los productos no existe o está inactivo.");
   const nombre = new Map(prods.map((p) => [p.id, p.nombre]));
   const hoy = hoyLima();
-  const loteIds = [...lineas.values()].flatMap((l) => (l.loteId ? [l.loteId] : []));
-  const lotes = new Map((loteIds.length ? await db.select().from(lote).where(inArray(lote.id, loteIds)) : []).map((l) => [l.id, l]));
+  const loteIds = [...new Set([...lineas.values()].map((l) => l.loteId))];
+  const lotes = new Map((await db.select().from(lote).where(inArray(lote.id, loteIds))).map((l) => [l.id, l]));
   const porLote = new Map<number, number>();
-  for (const l of lineas.values()) if (l.loteId) porLote.set(l.loteId, (porLote.get(l.loteId) ?? 0) + l.unidades);
+  for (const l of lineas.values()) porLote.set(l.loteId, (porLote.get(l.loteId) ?? 0) + l.unidades);
   for (const [loteId, pedidas] of porLote) {
     const l = lotes.get(loteId);
     const linea = [...lineas.values()].find((x) => x.loteId === loteId)!;
@@ -99,7 +102,7 @@ export async function listarTransferencias(db: Db, user: Sesion, estado?: string
     .where(cond.length ? and(...cond) : undefined).orderBy(desc(transferencia.id)).limit(100);
   const ids = rows.map((r) => r.t.id);
   const det = ids.length ? await db.select({
-    d: transferenciaDetalle, producto: producto.nombre, codigo: producto.codigo, laboratorio: laboratorio.nombre, categoria: categoria.nombre,
+    d: transferenciaDetalle, producto: producto.nombre, codigo: producto.codigo, laboratorio: laboratorio.nombre, categoria: categoria.nombre, registroSanitario: producto.registroSanitario,
     lote: lote.numero, vencimiento: lote.vencimiento, stockLote: lote.cantidad,
   }).from(transferenciaDetalle).innerJoin(producto, eq(producto.id, transferenciaDetalle.productoId)).leftJoin(lote, eq(lote.id, transferenciaDetalle.loteId))
     .leftJoin(laboratorio, eq(laboratorio.id, producto.laboratorioId)).leftJoin(categoria, eq(categoria.id, producto.categoriaId))
@@ -118,7 +121,7 @@ export async function listarTransferencias(db: Db, user: Sesion, estado?: string
     ...(aprueba ? { costoAdicional: t.costoAdicional, totalVenta: t.totalVenta, costoTotal: t.costoTotal, medioPago: t.medioPago } : {}),
     items: det.filter((x) => x.d.transferenciaId === t.id).map((x) => ({
       id: x.d.id, productoId: x.d.productoId, producto: x.producto, codigo: x.codigo, laboratorio: x.laboratorio, categoria: x.categoria, unidades: x.d.unidades,
-      loteId: x.d.loteId, lote: x.lote, vencimiento: x.vencimiento,
+      loteId: x.d.loteId, lote: x.lote, vencimiento: x.vencimiento, registroSanitario: x.registroSanitario,
       enCampana: x.d.enCampana, stockActual: x.d.loteId ? x.stockLote ?? 0 : stock.get(x.d.productoId) ?? 0,
       ...(aprueba ? { precioUnitario: x.d.precioUnitario, costoUnitario: x.d.costoUnitario, ...(referencias.get(x.d.id) ?? {}) } : {}),
     })),
@@ -127,7 +130,7 @@ export async function listarTransferencias(db: Db, user: Sesion, estado?: string
 
 /**
  * Para fijar el precio: el PVP por unidad de lista (sin descuentos) y el costo de la mercadería que saldría.
- * Con lote elegido es el costo de ese lote; en automático, el promedio de los lotes que tomaría el FEFO.
+ * El costo es el del lote elegido en cada línea.
  */
 async function preciosYCostosActuales(db: Db, det: (typeof transferenciaDetalle.$inferSelect)[]) {
   const out = new Map<number, { precioActual: number | null; costoActual: number | null }>();
@@ -159,7 +162,7 @@ async function pendiente(db: Db, transferenciaId: number) {
 }
 
 /**
- * Aprobar descuenta el stock por lote (el elegido o FEFO) al costo de cada lote.
+ * Aprobar descuenta el stock del lote elegido en cada línea, a su costo.
  * A otra farmacia es una venta: emite factura a su RUC, atribuida al vendedor elegido, sin comisión y fuera de caja.
  * A una sucursal propia es un traslado: no hay venta, sale a costo.
  */
@@ -177,6 +180,8 @@ export async function aprobarTransferencia(db: Db, user: Sesion, transferenciaId
   return db.transaction(async (tx) => {
     const det = await tx.select({ d: transferenciaDetalle, nombre: producto.nombre }).from(transferenciaDetalle).innerJoin(producto, eq(producto.id, transferenciaDetalle.productoId))
       .where(eq(transferenciaDetalle.transferenciaId, transferenciaId)).orderBy(asc(transferenciaDetalle.id));
+    // Toda salida va asociada a su lote. Las registradas antes sin lote se rechazan y se vuelven a registrar eligiéndolo.
+    for (const { d, nombre } of det) if (!d.loteId) throw new ErrorNegocio("LOTE_REQUERIDO", `${nombre} se registró sin lote. Rechaza esta transferencia y regístrala de nuevo eligiendo el lote.`, 422);
     if (esVenta) for (const { d, nombre } of det) if (!precios.has(d.id)) throw new ErrorNegocio("FALTA_PRECIO", `Falta el precio de venta de ${nombre}.`);
     await bloquearProductos(tx, det.map((x) => x.d.productoId));
     // La venta se crea primero para que el kardex y el detalle apunten a la factura.
@@ -189,7 +194,7 @@ export async function aprobarTransferencia(db: Db, user: Sesion, transferenciaId
       const [c] = await tx.insert(cliente).values({ tipoDoc: t.destinoTipoDoc ?? "RUC", numero: t.destinoDoc!, nombre: t.destino }).onConflictDoUpdate({ target: cliente.numero, set: { nombre: t.destino } }).returning({ id: cliente.id });
       const numero = await siguienteNumero(tx, SERIES[tipoComprobante]);
       const subtotal = r2(totalVenta! / 1.18);
-      const [v] = await tx.insert(venta).values({ sesionId: null, usuarioId: input.vendedorId!, canal: "TRANSFERENCIA", clienteId: c.id, tipoComprobante, serie: SERIES[tipoComprobante], numero, subtotal, igv: r2(totalVenta! - subtotal), total: totalVenta!, cpeEstado: "PENDIENTE" }).returning();
+      const [v] = await tx.insert(venta).values({ sesionId: null, usuarioId: input.vendedorId!, canal: "TRANSFERENCIA", clienteId: c.id, tipoComprobante, serie: SERIES[tipoComprobante], numero, subtotal, igv: r2(totalVenta! - subtotal), total: totalVenta!, cpeEstado: estadoInicialCpe() }).returning();
       await tx.insert(ventaPago).values({ ventaId: v.id, medio: input.medioPago!, monto: totalVenta! });
       ventaId = v.id; docRef = `${v.serie}-${String(v.numero).padStart(6, "0")}`;
     }

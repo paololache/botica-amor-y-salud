@@ -140,7 +140,8 @@ export default function Vender() {
     setEnviando(true); setErrorCobro(null);
     try {
       const pagosOk = pagos.filter((p) => Number(p.monto) > 0).map((p) => ({ medio: p.medio, monto: Number(p.monto) }));
-      if (!pagosOk.length) pagosOk.push({ medio: "EFECTIVO", monto: total });
+      // Un solo medio sin monto escrito: se cobra el total con el medio elegido (Yape, Plin, tarjeta…), no en efectivo.
+      if (!pagosOk.length) pagosOk.push({ medio: pagos.length === 1 ? pagos[0].medio : "EFECTIVO", monto: total });
       const r = await api<Resultado>("/api/ventas", { cuerpo: {
         items: items.map((i) => ({ presentacionId: i.presId, cantidad: i.cantidad, descuentoPct: 0, origen: i.origen })),
         tipoComprobante: tipo, pagos: pagosOk,
@@ -364,7 +365,10 @@ export default function Vender() {
             <div key={i} className="flex flex-wrap gap-2 items-center">
               <div className="flex gap-1 flex-wrap">
                 {MEDIOS.map((m) => (
-                  <button key={m.v} onClick={() => setPagos((ps) => ps.map((x, k) => (k === i ? { ...x, medio: m.v } : x)))}
+                  <button key={m.v} onClick={() => setPagos((ps) => ps.length === 1
+                    // Un solo medio: Yape, Plin, tarjeta o transferencia se llenan con el total (no dan vuelto); en efectivo se deja libre para calcular el vuelto.
+                    ? [{ medio: m.v, monto: m.v === "EFECTIVO" ? "" : total.toFixed(2) }]
+                    : ps.map((x, k) => (k === i ? { ...x, medio: m.v } : x)))}
                     className={`h-9 px-3 rounded-xl text-[13px] font-semibold border ${p.medio === m.v ? "bg-petroleo text-white border-petroleo" : "bg-papel border-foil-3 text-ink-2"}`}>{m.t}</button>
                 ))}
               </div>
@@ -398,9 +402,6 @@ export default function Vender() {
               <p className="sello mx-auto">{resultado.ref}</p>
               <p className="cifra text-[42px] mt-3">{soles(resultado.total)}</p>
               <p className="text-ink-2 text-sm">Vuelto: <b>{soles(resultado.vuelto)}</b></p>
-              <div className="mt-3 flex justify-center gap-2">
-                <Insignia tono={resultado.cpeEstado === "ACEPTADO" ? "ok" : resultado.cpeEstado === "NO_APLICA" ? "gris" : "ambar"}>{resultado.cpeEstado === "ACEPTADO" ? "SUNAT aceptó el comprobante" : resultado.cpeEstado === "NO_APLICA" ? "No se envía a SUNAT" : "CPE pendiente de envío"}</Insignia>
-              </div>
             </div>
             {mensaje ? (
               <div className="mt-4 rounded-2xl bg-[linear-gradient(160deg,#fff6f9,#fff)] border border-amor/20 px-4 py-3.5" aria-live="polite">
@@ -416,7 +417,7 @@ export default function Vender() {
             ) : null}
             <div className="grid grid-cols-3 gap-2 mt-5">
               <Boton variante="borde" onClick={() => window.open(`/comprobante/${resultado.id}?formato=ticket`, "_blank")}><Eye size={16} /> Ver</Boton>
-              <Boton variante="borde" onClick={() => window.open(`/comprobante/${resultado.id}?formato=ticket&imprimir=1`, "_blank")}><Printer size={16} /> Ticket</Boton>
+              <Boton variante="borde" onClick={() => window.open(`/comprobante/${resultado.id}?formato=ticket&imprimir=1`, "_blank")}><Printer size={16} /> Imprimir</Boton>
               <Boton variante="borde" onClick={() => window.open(`/comprobante/${resultado.id}?formato=a4&imprimir=1`, "_blank")}><FileText size={16} /> A4</Boton>
             </div>
             <Boton variante="amor" className="w-full mt-2" autoFocus onClick={nueva}>Nueva venta <Tecla k="F2" /></Boton>

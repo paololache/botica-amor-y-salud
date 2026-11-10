@@ -56,7 +56,7 @@ const rangoInicial = (periodo: Periodo): [string, string] => periodo === "vencim
 const TONO: Record<string, "rojo" | "ambar" | "azul" | "ok" | "gris"> = {
   Agotado: "rojo", "Bajo mínimo": "ambar", "Por terminarse": "azul",
   "Dar de baja": "rojo", "Devolver o liquidar": "rojo", "Liquidar o crear campaña": "ambar", "Priorizar venta": "azul",
-  Salida: "ambar", Entrada: "ok", Faltante: "rojo", Sobrante: "ok", Cuadrado: "gris", "Por validar": "ambar",
+  Salida: "ambar", Entrada: "ok", Faltante: "rojo", Sobrante: "ok", Cuadrado: "gris", "Por aprobar": "ambar",
 };
 /** Columnas que tiene sentido sumar al pie de los reportes especiales. */
 const SUMABLES = new Set(["unidades", "costoTotal", "costoPedido", "sugerido", "movimientos", "saldoEfectivo", "saldoVirtual", "diferencia"]);
@@ -368,7 +368,7 @@ function NuevaMetrica({ base, derivadas, alGuardar }: { base: Met[]; derivadas: 
     <div className="grid md:grid-cols-2 gap-6 items-start">
       <section className="space-y-3">
         <h3 className="font-semibold text-[15px]">Nueva métrica</h3>
-        <Campo etiqueta="Nombre"><Entrada value={nombre} onChange={(e) => setNombre(e.target.value)} placeholder="Ventas por ticket con complemento" /></Campo>
+        <Campo etiqueta="Nombre"><Entrada value={nombre} onChange={(e) => setNombre(e.target.value)} placeholder="Ventas con complemento por venta" /></Campo>
         <Campo etiqueta="Fórmula" ayuda="Usa + − × ÷ y paréntesis sobre las métricas base">
           <Entrada value={formula} onChange={(e) => setFormula(e.target.value)} placeholder="ventas / tickets" className="font-mono text-[13.5px]" />
         </Campo>

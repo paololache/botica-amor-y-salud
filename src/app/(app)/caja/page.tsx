@@ -7,6 +7,7 @@ import { Boton, Campo, Entrada, EntradaNumero, Encabezado, Cargando, Insignia, M
 import { useUsuario } from "@/components/shell";
 
 type Estado = {
+  porAprobar: { id: number; cerradaEn: string | null; diferencia: number | null }[];
   sesion: { id: number; cajaId: number; caja: string; turno: string; abiertaEn: string; estado: string; montoApertura: number } | null;
   caja: { nombre: string; ocupadaPor: string | null };
   resumen: {
@@ -17,7 +18,7 @@ type Estado = {
   conceptos: { INGRESO: string[]; EGRESO: string[] };
 };
 type Virtual = { clave: string; origen: string; referencia: string; medio: Medio; monto: number; fecha: string };
-type Resultado = { sesionId: number; estado: string; diferencia: number; efectivo: { sistema: number; declarado: number }; virtual: { sistema: number; declarado: number; sinConfirmar: number } };
+type Resultado = { sesionId: number; estado: string; requiereValidacion: boolean; observaciones: string[]; diferencia: number; efectivo: { sistema: number; declarado: number }; virtual: { sistema: number; declarado: number; noCuadran: number } };
 type Medio = "EFECTIVO" | "YAPE" | "PLIN" | "TARJETA" | "TRANSFERENCIA";
 const TURNOS = ["MAÑANA", "TARDE", "NOCHE", "COMPLETO"] as const;
 const NOMBRE_MEDIO: Record<Medio, string> = { EFECTIVO: "Efectivo", YAPE: "Yape", PLIN: "Plin", TARJETA: "Tarjeta", TRANSFERENCIA: "Transferencia" };
@@ -38,8 +39,8 @@ export default function Caja() {
   const [cerrando, setCerrando] = useState(false);
   const [resultado, setResultado] = useState<Resultado | null>(null);
   const [efectivo, setEfectivo] = useState("");
-  const [confirmados, setConfirmados] = useState<Set<string>>(new Set());
-  const [val, setVal] = useState({ login: "", password: "", observacion: "" });
+  // Pagos virtuales que NO cuadran → monto realmente registrado en la app (texto mientras escribe). Lo no marcado está conforme.
+  const [noCuadran, setNoCuadran] = useState<Record<string, string>>({});
   const [borrar, setBorrar] = useState<{ id: number; tipo: string; concepto: string; medio: string; monto: number } | null>(null);
   const [motivoBorrar, setMotivoBorrar] = useState("");
 
@@ -75,8 +76,9 @@ export default function Caja() {
   const cerrar = async () => {
     setOcupado(true); setError(null);
     try {
-      const r = await api<Resultado>("/api/caja/cerrar", { cuerpo: { efectivo: Number(efectivo), confirmados: [...confirmados], observacion: obs || undefined } });
-      setResultado(r); setCerrando(false); setObs(""); setEfectivo(""); setConfirmados(new Set()); recargar();
+      const montos = Object.fromEntries(Object.entries(noCuadran).map(([c, v]) => [c, Number(v) || 0]));
+      const r = await api<Resultado>("/api/caja/cerrar", { cuerpo: { efectivo: Number(efectivo), noCuadran: montos, observacion: obs || undefined } });
+      setResultado(r); setCerrando(false); setObs(""); setEfectivo(""); setNoCuadran({}); recargar();
     } catch (e) { setError((e as Error).message); } finally { setOcupado(false); }
   };
 
@@ -88,14 +90,6 @@ export default function Caja() {
       avisar("ok", `${borrar.tipo === "INGRESO" ? "Ingreso" : "Egreso"} eliminado.`);
       setBorrar(null); recargar();
     } catch (e) { avisar("error", (e as Error).message); } finally { setOcupado(false); }
-  };
-
-  const validar = async (sesionId: number) => {
-    setOcupado(true); setError(null);
-    try {
-      await api("/api/caja/validar", { cuerpo: { sesionId, ...val } });
-      avisar("ok", "Cierre validado."); setResultado((r) => (r ? { ...r, estado: "CERRADA" } : r)); recargar();
-    } catch (e) { setError((e as Error).message); } finally { setOcupado(false); }
   };
 
   const historial = (
@@ -115,7 +109,7 @@ export default function Caja() {
         <Tarjeta className="p-7 aparecer">
           <div className="text-center">
             <p className="sello mx-auto">SESIÓN {String(resultado.sesionId).padStart(6, "0")}</p>
-            <h1 className="font-display font-semibold text-2xl mt-4">Caja cerrada</h1>
+            <h1 className="font-display font-semibold text-2xl mt-4">{resultado.requiereValidacion ? "Cierre registrado, por aprobar" : "Caja cerrada"}</h1>
             <p className="text-ink-2 mt-2">{Math.abs(d) < 0.005 ? "Lo declarado coincide con el sistema" : d < 0 ? "Faltante respecto a lo registrado en el sistema" : "Sobrante respecto a lo registrado en el sistema"}</p>
             <p className={`cifra text-[52px] mt-1 ${Math.abs(d) < 0.005 ? "text-ok" : tonoDif(d)}`}>{conSigno(d)}</p>
           </div>
@@ -123,9 +117,16 @@ export default function Caja() {
             <thead><tr><th /><th className="num">Sistema</th><th className="num">Declarado</th><th className="num">Diferencia</th></tr></thead>
             <tbody>
               {fila("Saldo final efectivo", resultado.efectivo.sistema, resultado.efectivo.declarado)}
-              {fila("Saldo final virtual", resultado.virtual.sistema, resultado.virtual.declarado, resultado.virtual.sinConfirmar ? `${resultado.virtual.sinConfirmar} ${resultado.virtual.sinConfirmar === 1 ? "pago sin confirmar" : "pagos sin confirmar"}` : undefined)}
+              {fila("Saldo final virtual", resultado.virtual.sistema, resultado.virtual.declarado, resultado.virtual.noCuadran ? `${resultado.virtual.noCuadran} ${resultado.virtual.noCuadran === 1 ? "pago no cuadra" : "pagos no cuadran"}` : undefined)}
             </tbody>
           </table>
+          {resultado.requiereValidacion ? (
+            <div className="mt-5 rounded-2xl bg-ambar-claro px-4 py-3 text-[13.5px]">
+              <p className="font-semibold text-[#8a5b00]">El cierre tiene observaciones y queda pendiente de aprobación del administrador</p>
+              <ul className="mt-1.5 list-disc pl-5 text-ink-2">{resultado.observaciones.map((o) => <li key={o}>{o}</li>)}</ul>
+              <p className="mt-1.5 text-ink-2">Ya puedes entregar la caja: el siguiente turno puede abrirla. El administrador revisará los pagos y detallará la observación.</p>
+            </div>
+          ) : null}
           <div className="flex justify-center gap-2 mt-6">
             <Link href={`/caja/reporte/${resultado.sesionId}`}><Boton variante="petroleo">Ver reporte de cierre</Boton></Link>
             <Boton variante="borde" onClick={() => setResultado(null)}>Volver</Boton>
@@ -140,6 +141,15 @@ export default function Caja() {
     return (
       <div>
         <Encabezado titulo="Abrir caja" bajada="Elige tu turno y escribe con cuánto efectivo empiezas.">{historial}</Encabezado>
+        {datos.porAprobar.length ? (
+          <div className="max-w-lg mb-4 rounded-2xl bg-ambar-claro px-4 py-3 text-[13.5px]">
+            <p className="font-semibold text-[#8a5b00]">{datos.porAprobar.length === 1 ? "Tienes un cierre con observaciones por aprobar" : `Tienes ${datos.porAprobar.length} cierres con observaciones por aprobar`}</p>
+            <ul className="mt-1">{datos.porAprobar.map((p) => (
+              <li key={p.id}><Link href={`/caja/reporte/${p.id}`} className="font-semibold text-petroleo-3 hover:underline">Sesión {String(p.id).padStart(6, "0")}</Link><span className="text-ink-2"> · {fechaHora(p.cerradaEn)} · diferencia {conSigno(p.diferencia ?? 0)}</span></li>
+            ))}</ul>
+            <p className="text-ink-2 mt-1">El administrador lo revisa; mientras tanto puedes abrir tu turno.</p>
+          </div>
+        ) : null}
         <Tarjeta className="max-w-lg p-6">
           <div className="flex items-center justify-between gap-3">
             <span className="font-semibold text-[16px]">{datos.caja.nombre}</span>
@@ -166,42 +176,28 @@ export default function Caja() {
   const s = datos.sesion;
   const res = datos.resumen;
   const virtuales = res?.virtuales ?? [];
-  const virtualConfirmado = r2(virtuales.filter((v) => confirmados.has(v.clave)).reduce((a, v) => a + v.monto, 0));
-  const sinConfirmar = virtuales.length - virtuales.filter((v) => confirmados.has(v.clave)).length;
-  const alternar = (clave: string) => setConfirmados((c) => { const n = new Set(c); if (n.has(clave)) n.delete(clave); else n.add(clave); return n; });
-  const todos = virtuales.length > 0 && sinConfirmar === 0;
+  const marcado = (clave: string) => noCuadran[clave] !== undefined;
+  const alternar = (clave: string) => setNoCuadran((r) => { const n = { ...r }; if (n[clave] !== undefined) delete n[clave]; else n[clave] = ""; return n; });
+  const marcados = virtuales.filter((v) => marcado(v.clave));
+  const faltaMonto = marcados.some((v) => noCuadran[v.clave].trim() === "");
+  const descuadran = marcados.filter((v) => noCuadran[v.clave].trim() !== "" && Math.abs((Number(noCuadran[v.clave]) || 0) - v.monto) >= 0.005).length;
+  // Igual que en el servidor: lo virtual del sistema, ajustado por lo que se registró con otro monto.
+  const virtualSistema = r2((["YAPE", "PLIN", "TARJETA", "TRANSFERENCIA"] as Medio[]).reduce((a, m) => a + (res?.esperado[m] ?? 0), 0));
+  const virtualDeclarado = r2(marcados.reduce((a, v) => a + (Number(noCuadran[v.clave]) || 0) - v.monto, virtualSistema));
   const movEfectivo = (tipo: string) => (res?.movimientos ?? []).filter((m) => m.tipo === tipo && m.medio === "EFECTIVO").reduce((a, m) => a + m.monto, 0);
-  const abrirCierre = () => { setCerrando(true); setError(null); setEfectivo(""); setConfirmados(new Set()); };
-
-  if (s.estado === "EN_CIERRE") {
-    return (
-      <div className="max-w-xl mx-auto">
-        <Tarjeta className="p-7">
-          <h1 className="font-display font-semibold text-2xl">Tu cierre espera validación</h1>
-          <p className="text-ink-2 mt-2">La diferencia del cierre de caja supera el umbral. Pide a un administrador que ingrese su usuario y clave.</p>
-          <div className="grid sm:grid-cols-2 gap-3 mt-5">
-            <Campo etiqueta="Usuario del administrador"><Entrada value={val.login} onChange={(e) => setVal({ ...val, login: e.target.value })} /></Campo>
-            <Campo etiqueta="Clave"><Entrada type="password" value={val.password} onChange={(e) => setVal({ ...val, password: e.target.value })} /></Campo>
-          </div>
-          <Campo etiqueta="Observación" className="mt-3"><Entrada value={val.observacion} onChange={(e) => setVal({ ...val, observacion: e.target.value })} placeholder="Qué explica la diferencia" /></Campo>
-          {error ? <p className="text-sm text-rojo mt-3">{error}</p> : null}
-          <Boton className="w-full mt-5" cargando={ocupado} onClick={() => validar(s.id)}>Validar cierre</Boton>
-        </Tarjeta>
-      </div>
-    );
-  }
+  const abrirCierre = () => { setCerrando(true); setError(null); setEfectivo(""); setNoCuadran({}); };
 
   return (
     <div>
-      <Encabezado titulo={`${s.caja} · turno ${s.turno.toLowerCase()}`} bajada={`Abierta ${fechaHora(s.abiertaEn)} con ${soles(s.montoApertura)} en efectivo · ${datos.resumen?.tickets ?? 0} tickets emitidos`}>
+      <Encabezado titulo={`${s.caja} · turno ${s.turno.toLowerCase()}`} bajada={`Abierta ${fechaHora(s.abiertaEn)} con ${soles(s.montoApertura)} en efectivo · ${datos.resumen?.tickets ?? 0} ${(datos.resumen?.tickets ?? 0) === 1 ? "venta realizada" : "ventas realizadas"}`}>
         {historial}
         <Boton variante="amor" onClick={abrirCierre}>Cerrar caja</Boton>
       </Encabezado>
       {cerrando ? (
         <Tarjeta titulo="Cierre de caja" className="mb-6 aparecer" accion={<Boton tam="sm" variante="fantasma" onClick={() => setCerrando(false)}>Cancelar</Boton>}>
           <div className="px-5 pb-5">
-            <p className="text-sm text-ink-2 mb-4">Escribe el efectivo que tienes en caja y marca cada pago virtual que sí te llegó. El sistema compara con lo registrado y calcula la diferencia.</p>
-            <div className="grid md:grid-cols-[260px_minmax(0,1fr)] gap-5 items-start">
+            <p className="text-sm text-ink-2 mb-4">Escribe el efectivo que tienes en caja. Revisa los pagos virtuales en la app o el voucher: si todos cuadran no marques nada; marca solo el que no cuadre y escribe el monto que realmente se registró. El sistema compara con lo registrado y calcula la diferencia.</p>
+            <div className="grid lg:grid-cols-[260px_minmax(0,1fr)] gap-5 items-start">
               <div className="rounded-2xl border border-foil-2 p-4">
                 <p className="text-[12px] font-semibold text-ink-3 uppercase tracking-wide">Paso 1</p>
                 <Campo etiqueta="Efectivo en caja" ayuda="Cuenta todo el efectivo del cajón, incluida la apertura, y escribe el total" className="mt-1">
@@ -214,21 +210,32 @@ export default function Caja() {
                     <p className="text-[12px] font-semibold text-ink-3 uppercase tracking-wide">Paso 2</p>
                     <p className="font-semibold text-[14px]">Valida los pagos virtuales</p>
                   </div>
-                  {virtuales.length ? <Boton tam="sm" variante="borde" onClick={() => setConfirmados(todos ? new Set() : new Set(virtuales.map((v) => v.clave)))}>{todos ? "Desmarcar todos" : "Marcar todos como recibidos"}</Boton> : null}
+                  {virtuales.length ? <span className="text-[12.5px] text-ink-2">{marcados.length ? `${marcados.length} de ${virtuales.length} no cuadran` : `${virtuales.length} conformes`}</span> : null}
                 </div>
                 {virtuales.length ? (
                   <div className="max-h-72 overflow-y-auto mt-2">
                     <table className="tabla">
-                      <thead><tr><th className="w-10"><span className="sr-only">Recibido</span></th><th>Hora</th><th>Comprobante</th><th>Medio</th><th className="num">Monto</th></tr></thead>
+                      <thead><tr><th className="w-24 whitespace-nowrap">No cuadra</th><th>Hora</th><th>Comprobante</th><th>Medio</th><th className="num">Monto</th><th className="num">Monto registrado</th></tr></thead>
                       <tbody>{virtuales.map((v) => {
-                        const ok = confirmados.has(v.clave);
+                        const ok = marcado(v.clave);
+                        const texto = noCuadran[v.clave] ?? "";
+                        const dif = r2((Number(texto) || 0) - v.monto);
                         return (
-                          <tr key={v.clave} onClick={() => alternar(v.clave)} className={`cursor-pointer ${ok ? "" : "text-ink-2"}`}>
-                            <td><input type="checkbox" className="size-4 accent-[var(--color-ok)]" checked={ok} onChange={() => alternar(v.clave)} onClick={(e) => e.stopPropagation()} aria-label={`${v.medio} ${v.referencia} ${soles(v.monto)} recibido`} /></td>
+                          <tr key={v.clave} className={ok ? "bg-ambar-claro/60" : ""}>
+                            <td className="text-center"><input type="checkbox" className="size-4 accent-[var(--color-rojo)] cursor-pointer" checked={ok} onChange={() => alternar(v.clave)} aria-label={`${NOMBRE_MEDIO[v.medio]} ${v.referencia} ${soles(v.monto)} no cuadra`} /></td>
                             <td className="tabular-nums">{new Date(v.fecha).toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit" })}</td>
                             <td>{v.referencia}{v.origen === "Ingreso" ? <span className="text-ink-3"> · ingreso</span> : null}</td>
                             <td>{NOMBRE_MEDIO[v.medio]}</td>
                             <td className="num font-semibold">{soles(v.monto)}</td>
+                            <td className="num w-40">
+                              {ok ? (
+                                <>
+                                  <EntradaNumero autoFocus inputMode="decimal" value={texto} onChange={(e) => { const t = e.target.value.replace(",", "."); setNoCuadran((r) => ({ ...r, [v.clave]: t })); }}
+                                    placeholder="0.00" className="h-9 w-28 text-right font-semibold ml-auto" aria-label={`Monto registrado de ${v.referencia}`} />
+                                  {texto.trim() !== "" ? <span className={`block text-[11.5px] font-semibold mt-0.5 ${Math.abs(dif) < 0.005 ? "text-ok" : tonoDif(dif)}`}>{Math.abs(dif) < 0.005 ? "Igual al registro: conforme" : (Number(texto) || 0) < 0.005 ? "No llegó" : `${dif < 0 ? "Faltan" : "Sobran"} ${soles(Math.abs(dif))}`}</span> : <span className="block text-[11.5px] text-ink-3 mt-0.5">0 si no llegó</span>}
+                                </>
+                              ) : <span className="text-[12px] font-semibold text-ok">Conforme</span>}
+                            </td>
                           </tr>
                         );
                       })}</tbody>
@@ -239,12 +246,13 @@ export default function Caja() {
             </div>
             <div className="mt-4 grid sm:grid-cols-2 gap-3">
               <div className="rounded-2xl bg-foil px-4 py-3"><p className="text-[12.5px] text-ink-2 font-semibold">Saldo final efectivo</p><p className="cifra text-[24px]">{soles(Number(efectivo) || 0)}</p></div>
-              <div className="rounded-2xl bg-foil px-4 py-3"><p className="text-[12.5px] text-ink-2 font-semibold">Saldo final virtual</p><p className="cifra text-[24px]">{soles(virtualConfirmado)}</p>
-                {sinConfirmar ? <p className="text-[12.5px] text-rojo">{sinConfirmar} {sinConfirmar === 1 ? "pago sin confirmar contará" : "pagos sin confirmar contarán"} como faltante</p> : null}</div>
+              <div className="rounded-2xl bg-foil px-4 py-3"><p className="text-[12.5px] text-ink-2 font-semibold">Saldo final virtual</p><p className="cifra text-[24px]">{soles(virtualDeclarado)}</p>
+                {descuadran ? <p className="text-[12.5px] text-rojo">{descuadran} {descuadran === 1 ? "pago no cuadra" : "pagos no cuadran"}: el cierre irá a aprobación del administrador</p> : null}
+                {faltaMonto ? <p className="text-[12.5px] text-[#8a5b00]">Escribe el monto registrado de cada pago marcado</p> : null}</div>
             </div>
             <Campo etiqueta="Observación (opcional)" className="mt-4"><Entrada value={obs} onChange={(e) => setObs(e.target.value)} maxLength={250} placeholder="Ej.: un Yape no llegó, se avisó al cliente" /></Campo>
             {error ? <p className="text-sm text-rojo mt-3" role="alert">{error}</p> : null}
-            <Boton variante="amor" tam="lg" className="w-full mt-5" cargando={ocupado} disabled={efectivo.trim() === ""} onClick={cerrar}>Confirmar y cerrar caja</Boton>
+            <Boton variante="amor" tam="lg" className="w-full mt-5" cargando={ocupado} disabled={efectivo.trim() === "" || faltaMonto} onClick={cerrar}>Confirmar y cerrar caja</Boton>
           </div>
         </Tarjeta>
       ) : null}
@@ -263,7 +271,7 @@ export default function Caja() {
             <div className="border-t border-foil px-5 py-4">
               <div className="flex flex-wrap items-baseline justify-between gap-2">
                 <h3 className="font-semibold text-[15px]">Ventas del turno</h3>
-                <span className="text-[12.5px] text-ink-3">{res.tickets} {res.tickets === 1 ? "ticket" : "tickets"}{res.anuladas ? ` · ${res.anuladas} anuladas` : ""} · se actualiza solo</span>
+                <span className="text-[12.5px] text-ink-3">{res.tickets} {res.tickets === 1 ? "venta" : "ventas"}{res.anuladas ? ` · ${res.anuladas} anuladas` : ""} · se actualiza solo</span>
               </div>
               <dl className="mt-3 grid grid-cols-[1fr_auto] gap-y-1.5 text-[14px]">
                 {res.ventas.map((v) => (

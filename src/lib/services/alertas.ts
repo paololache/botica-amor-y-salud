@@ -7,6 +7,7 @@ import { filas } from "../sqlrows";
 import { diasEntre, ErrorNegocio, hoy as hoyLima, sumarDias } from "../util";
 import { parametros } from "./parametros";
 import { campanasVigentes } from "./campanas";
+import { sunatManual } from "./sunat";
 
 const { alerta, lote, motivo, movimientoInventario, movDetalle, auditoria, parametro } = schema;
 
@@ -115,12 +116,13 @@ async function calcularAlertas(db: Db) {
        or s.estado = 'EN_CIERRE'`);
   for (const c of cajas) {
     if (c.estado === "CERRADA") nuevas.push({ clave: `CAJA:s:${c.id}`, tipo: "DIF_CAJA", severidad: "ALTA", titulo: `Cierre de ${c.nombre}`, detalle: `Diferencia de S/ ${Number(c.diferencia).toFixed(2)}`, referenciaTipo: "sesion", referenciaId: c.id, valor: Number(c.diferencia) });
-    else if (c.estado === "EN_CIERRE") nuevas.push({ clave: `CAJA:s:${c.id}`, tipo: "DIF_CAJA", severidad: "CRITICA", titulo: `Cierre de ${c.nombre} por validar`, detalle: "La diferencia supera el umbral y espera tu validación", referenciaTipo: "sesion", referenciaId: c.id });
+    else if (c.estado === "EN_CIERRE") nuevas.push({ clave: `CAJA:s:${c.id}`, tipo: "DIF_CAJA", severidad: "CRITICA", titulo: `Cierre de ${c.nombre} por aprobar`, detalle: "Tiene observaciones (diferencia o pagos virtuales sin confirmar) y espera tu aprobación", referenciaTipo: "sesion", referenciaId: c.id });
     else nuevas.push({ clave: `ABIERTA:s:${c.id}`, tipo: "CAJA_ABIERTA", severidad: "ALTA", titulo: `Caja de ${c.nombre}`, detalle: "Abierta hace más de 14 horas", referenciaTipo: "sesion", referenciaId: c.id });
   }
 
-  const [cpe] = await filas<{ n: string }>(db, sql`select count(*) n from venta where cpe_estado in ('PENDIENTE','RECHAZADO') and fecha < now() - interval '2 hours'`);
-  if (Number(cpe?.n ?? 0) > 0) nuevas.push({ clave: "CPE:pendientes", tipo: "CPE_PENDIENTE", severidad: "CRITICA", titulo: "Comprobantes sin aceptar", detalle: `${cpe.n} CPE sin CDR aceptado después de 2 horas`, valor: Number(cpe.n) });
+  // Con emisión manual ante SUNAT no hay comprobantes por enviar: no se alerta.
+  const [cpe] = sunatManual() ? [] : await filas<{ n: string }>(db, sql`select count(*) n from venta where cpe_estado in ('PENDIENTE','RECHAZADO') and fecha < now() - interval '2 hours'`);
+  if (cpe && Number(cpe.n ?? 0) > 0) nuevas.push({ clave: "CPE:pendientes", tipo: "CPE_PENDIENTE", severidad: "CRITICA", titulo: "Comprobantes sin aceptar", detalle: `${cpe.n} CPE sin CDR aceptado después de 2 horas`, valor: Number(cpe.n) });
 
   const camps = await filas<{ id: number; nombre: string; fin: string }>(db, sql`
     select id, nombre, fin::text as fin from campana where estado in ('ACTIVA','PROGRAMADA') and fin >= ${hoy} and fin <= ${sumarDias(hoy, p.aviso_campana_dias)}`);

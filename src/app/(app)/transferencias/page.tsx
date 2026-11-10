@@ -7,12 +7,13 @@ import { BuscadorProducto, type ProdBusqueda } from "@/components/buscador-produ
 import { useUsuario } from "@/components/shell";
 import { puede } from "@/lib/permisos";
 
-type Item = { id: number; productoId: number; loteId: number | null; lote: string | null; vencimiento: string | null; producto: string; codigo: string; laboratorio: string | null; categoria: string | null; unidades: number; enCampana: boolean; stockActual: number; precioUnitario?: number | null; costoUnitario?: number | null; precioActual?: number | null; costoActual?: number | null };
+type Item = { id: number; productoId: number; loteId: number | null; lote: string | null; vencimiento: string | null; registroSanitario: string | null; producto: string; codigo: string; laboratorio: string | null; categoria: string | null; unidades: number; enCampana: boolean; stockActual: number; precioUnitario?: number | null; costoUnitario?: number | null; precioActual?: number | null; costoActual?: number | null };
 type Transf = { id: number; referencia: string; tipoDestino: "EMPRESA" | "SUCURSAL"; destinoTipoDoc: "RUC" | "DNI" | null; destinoDoc: string | null; registradoPorId: number; vendedor: string | null; ventaId: number | null; factura: string | null; medioPago?: string | null; destino: string; motivo: string; estado: string; registradoEn: string; registradoPor: string; decididoPor: string | null; decididoEn: string | null; comentario: string | null; costoAdicional?: number | null; totalVenta?: number | null; costoTotal?: number | null; items: Item[] };
 type Ficha = { id: number; codigo: string; nombre: string; laboratorio: string | null; categoria: string | null; registroSanitario: string | null; stockVigente: number; enPromocion: boolean; presentaciones: { factor: number; pvp: number }[]; lotes: LoteFicha[] };
 type LoteFicha = { id: number; numero: string; vencimiento: string; cantidad: number; estado: string };
-type Linea = { ficha: Ficha; lote: LoteFicha | null; unidades: number };
-const LoteTexto = ({ lote, vencimiento }: { lote: string | null; vencimiento: string | null }) => (lote ? <Sello lote={lote} vence={vencimiento ? vence(vencimiento) : undefined} /> : <span className="text-[12.5px] text-ink-2">Automático (FEFO)</span>);
+type Linea = { ficha: Ficha; lote: LoteFicha; unidades: number };
+// Cada línea sale de un lote elegido; solo las registradas antes del cambio pueden no tenerlo.
+const LoteTexto = ({ lote, vencimiento }: { lote: string | null; vencimiento: string | null }) => (lote ? <Sello lote={lote} vence={vencimiento ? vence(vencimiento) : undefined} /> : <span className="text-[12.5px] font-semibold text-rojo">Sin lote</span>);
 const TONO: Record<string, "ambar" | "ok" | "rojo" | "gris"> = { PENDIENTE: "ambar", APROBADA: "ok", RECHAZADA: "rojo", ANULADA: "gris" };
 const MEDIOS = [["TRANSFERENCIA", "Transferencia bancaria"], ["EFECTIVO", "Efectivo"], ["YAPE", "Yape"], ["PLIN", "Plin"], ["TARJETA", "Tarjeta"]];
 const TipoDestino = ({ t }: { t: Transf }) => (t.tipoDestino === "EMPRESA" ? <span className="text-[12px] text-ink-3">Venta · {t.destinoTipoDoc ?? "RUC"} {t.destinoDoc} · {t.destinoTipoDoc === "DNI" ? "boleta" : "factura"}</span> : <span className="text-[12px] text-ink-3">Traslado a sucursal propia</span>);
@@ -61,22 +62,22 @@ function Nueva({ alRegistrar }: { alRegistrar: () => void }) {
   const yaProducto = ficha ? lineas.filter((l) => l.ficha.id === ficha.id).reduce((s, l) => s + l.unidades, 0) : 0;
   const yaLote = lote ? lineas.filter((l) => l.lote?.id === lote.id).reduce((s, l) => s + l.unidades, 0) : 0;
   const cant = Number(cantidad);
-  const errorCant = !ficha || !(cant > 0) ? null
+  const errorCant = !ficha || !(cant > 0) || !lote ? null
     : lote && cant + yaLote > lote.cantidad ? `El lote ${lote.numero} tiene ${lote.cantidad} unidades${yaLote ? ` (ya agregaste ${yaLote})` : ""}.`
     : cant + yaProducto > ficha.stockVigente ? `Solo hay ${ficha.stockVigente} unidades vigentes${yaProducto ? ` (ya agregaste ${yaProducto})` : ""}.` : null;
   const elegir = async (p: ProdBusqueda) => {
     try { setFicha(await api<Ficha>(`/api/productos/${p.id}`)); setCantidad(""); setLoteId(""); } catch (e) { avisar("error", (e as Error).message); }
   };
   const agregar = () => {
-    if (!ficha || !(cant > 0) || errorCant) return;
-    const igual = (l: Linea) => l.ficha.id === ficha.id && (l.lote?.id ?? null) === (lote?.id ?? null);
+    if (!ficha || !lote || !(cant > 0) || errorCant) return;
+    const igual = (l: Linea) => l.ficha.id === ficha.id && l.lote.id === lote.id;
     setLineas((ls) => ls.some(igual) ? ls.map((l) => (igual(l) ? { ...l, unidades: l.unidades + cant } : l)) : [...ls, { ficha, lote, unidades: cant }]);
     setFicha(null); setCantidad(""); setLoteId("");
   };
   const continuar = async () => {
     setOcupado(true); setError(null);
     try {
-      const r = await api<{ referencia: string }>("/api/transferencias", { cuerpo: { tipoDestino, destino, destinoTipoDoc: tipoDestino === "EMPRESA" ? tipoDoc : undefined, destinoDoc: tipoDestino === "EMPRESA" ? ruc : undefined, motivo, items: lineas.map((l) => ({ productoId: l.ficha.id, loteId: l.lote?.id ?? null, unidades: l.unidades })) } });
+      const r = await api<{ referencia: string }>("/api/transferencias", { cuerpo: { tipoDestino, destino, destinoTipoDoc: tipoDestino === "EMPRESA" ? tipoDoc : undefined, destinoDoc: tipoDestino === "EMPRESA" ? ruc : undefined, motivo, items: lineas.map((l) => ({ productoId: l.ficha.id, loteId: l.lote.id, unidades: l.unidades })) } });
       avisar("ok", `Transferencia ${r.referencia} registrada. Queda pendiente de aprobación del propietario.`);
       setDestino(""); setRuc(""); setMotivo(""); setLineas([]); alRegistrar();
     } catch (e) { setError((e as Error).message); } finally { setOcupado(false); }
@@ -125,9 +126,9 @@ function Nueva({ alRegistrar }: { alRegistrar: () => void }) {
                 <Dato etiqueta="R. sanitario" valor={ficha.registroSanitario} />
                 {verPrecios ? <Dato etiqueta="Precio venta unitario" valor={soles(pvpUnidad)} /> : null}
                 <Dato etiqueta="Stock sistema (vigente)" valor={`${numero(ficha.stockVigente)} und.`} />
-                <Campo etiqueta="Lote" ayuda={lote ? undefined : "El sistema despacha primero el lote que vence antes"}>
-                  <Selector value={loteId} onChange={(e) => setLoteId(e.target.value)}>
-                    <option value="">Automático (FEFO)</option>
+                <Campo etiqueta="Lote (*)" ayuda={lote ? `Vence ${vence(lote.vencimiento)} · ${numero(lote.cantidad)} und. en el lote` : lotes.length ? "Elige el lote del que sale la mercadería" : "No hay lotes vigentes con stock"}>
+                  <Selector value={loteId} onChange={(e) => setLoteId(e.target.value)} aria-invalid={!lote}>
+                    <option value="">Elige el lote</option>
                     {lotes.map((l) => <option key={l.id} value={l.id}>{l.numero} · vence {vence(l.vencimiento)} · {numero(l.cantidad)} und.</option>)}
                   </Selector>
                 </Campo>
@@ -135,7 +136,7 @@ function Nueva({ alRegistrar }: { alRegistrar: () => void }) {
               </div>
               {ficha.enPromocion ? <p className="text-[13px] rounded-xl bg-ambar-claro text-[#8a5b00] px-3 py-2">Este producto está en campaña. En una transferencia la campaña no se aplica: no genera comisión.</p> : null}
               <div className="flex gap-2">
-                <Boton disabled={!(cant > 0) || !!errorCant} onClick={agregar}>Agregar a la lista</Boton>
+                <Boton disabled={!lote || !(cant > 0) || !!errorCant} onClick={agregar} title={lote ? undefined : "Elige primero el lote"}>Agregar a la lista</Boton>
                 <Boton variante="borde" onClick={() => { setFicha(null); setCantidad(""); setLoteId(""); }}>Limpiar</Boton>
               </div>
             </>
@@ -143,12 +144,13 @@ function Nueva({ alRegistrar }: { alRegistrar: () => void }) {
         </div>
         {lineas.length ? (
           <div className="overflow-x-auto border-t border-foil"><table className="tabla">
-            <thead><tr><th>Producto</th><th>Lote</th><th className="num">Stock</th><th className="num">Cantidad</th><th>Laboratorio</th><th>Categoría</th><th /></tr></thead>
+            <thead><tr><th>Producto</th><th>Lote / Venc.</th><th>R. sanitario</th><th className="num">Stock del lote</th><th className="num">Cantidad</th><th>Laboratorio</th><th>Categoría</th><th /></tr></thead>
             <tbody>{lineas.map((l) => (
-              <tr key={`${l.ficha.id}:${l.lote?.id ?? ""}`}>
+              <tr key={`${l.ficha.id}:${l.lote.id}`}>
                 <td><b>{l.ficha.nombre}</b><span className="block text-[12px] text-ink-3">{l.ficha.codigo}{l.ficha.enPromocion ? " · en campaña, sin comisión" : ""}</span></td>
-                <td><LoteTexto lote={l.lote?.numero ?? null} vencimiento={l.lote?.vencimiento ?? null} /></td>
-                <td className="num">{numero(l.lote ? l.lote.cantidad : l.ficha.stockVigente)}</td><td className="num font-semibold">{numero(l.unidades)}</td>
+                <td><LoteTexto lote={l.lote.numero} vencimiento={l.lote.vencimiento} /></td>
+                <td className="whitespace-nowrap">{l.ficha.registroSanitario ?? <span className="text-ink-3">—</span>}</td>
+                <td className="num">{numero(l.lote.cantidad)}</td><td className="num font-semibold">{numero(l.unidades)}</td>
                 <td>{l.ficha.laboratorio ?? "—"}</td><td>{l.ficha.categoria ?? "—"}</td>
                 <td className="text-right"><button className="size-8 grid place-items-center rounded-lg text-ink-3 hover:text-rojo" aria-label={`Quitar ${l.ficha.nombre}`} onClick={() => setLineas((ls) => ls.filter((x) => x !== l))}><Trash size={15} /></button></td>
               </tr>
@@ -197,6 +199,7 @@ function Aprobar({ t, usuarios, alDecidir }: { t: Transf; usuarios: Usuario[]; a
   const total = t.items.reduce((s, i) => s + (Number(precios[i.id]) || 0) * i.unidades, 0);
   const completo = !esVenta || (t.items.every((i) => Number(precios[i.id]) > 0) && !!vendedorId);
   const sinStock = t.items.filter((i) => i.unidades > i.stockActual);
+  const sinLote = t.items.filter((i) => !i.loteId);
   const decidir = async (aprobar: boolean) => {
     setOcupado(true); setError(null);
     try {
@@ -220,11 +223,12 @@ function Aprobar({ t, usuarios, alDecidir }: { t: Transf; usuarios: Usuario[]; a
         </div>
       </div>
       <div className="overflow-x-auto mt-3"><table className="tabla">
-        <thead><tr><th>Producto</th><th>Lote</th><th className="num">Cantidad</th><th className="num">Stock actual</th><th className="num">Costo actual</th>{esVenta ? <><th className="num">Precio de lista</th><th className="num">Precio de venta</th><th className="num">Margen</th><th className="num">Subtotal</th></> : null}</tr></thead>
+        <thead><tr><th>Producto</th><th>Lote / Venc.</th><th>R. sanitario</th><th className="num">Cantidad</th><th className="num">Stock del lote</th><th className="num">Costo actual</th>{esVenta ? <><th className="num">Precio de lista</th><th className="num">Precio de venta</th><th className="num">Margen</th><th className="num">Subtotal</th></> : null}</tr></thead>
         <tbody>{t.items.map((i) => (
           <tr key={i.id}>
             <td><b>{i.producto}</b><span className="block text-[12px] text-ink-3">{i.codigo}{i.laboratorio ? ` · ${i.laboratorio}` : ""}{i.enCampana ? " · en campaña, sin comisión" : ""}</span></td>
             <td><LoteTexto lote={i.lote} vencimiento={i.vencimiento} /></td>
+            <td className="whitespace-nowrap">{i.registroSanitario ?? <span className="text-ink-3">—</span>}</td>
             <td className="num">{numero(i.unidades)}</td>
             <td className={`num ${i.unidades > i.stockActual ? "text-rojo font-semibold" : ""}`}>{numero(i.stockActual)}</td>
             <td className="num text-ink-2">{i.costoActual != null ? soles(i.costoActual) : "—"}</td>
@@ -243,6 +247,7 @@ function Aprobar({ t, usuarios, alDecidir }: { t: Transf; usuarios: Usuario[]; a
           </tr>
         ))}</tbody>
       </table></div>
+      {sinLote.length ? <p className="text-sm text-rojo mt-3">{sinLote.map((i) => i.producto).join(", ")} se registró sin lote. Recházala y regístrala de nuevo eligiendo el lote.</p> : null}
       {sinStock.length ? <p className="text-sm text-rojo mt-3">Ya no hay stock suficiente de {sinStock.map((i) => i.producto).join(", ")}. Recházala o espera a reponer.</p> : null}
       {esVenta ? (
         <div className="grid sm:grid-cols-2 gap-3 mt-4">
@@ -276,7 +281,7 @@ function Aprobar({ t, usuarios, alDecidir }: { t: Transf; usuarios: Usuario[]; a
         <span className="text-[13.5px]">{esVenta ? <>Total de la {t.destinoTipoDoc === "DNI" ? "boleta" : "factura"}: <b>{soles(total)}</b> · costo {soles(t.items.reduce((s, i) => s + (i.costoActual ?? 0) * i.unidades, 0))}</> : <>Sin venta · costo {soles(t.items.reduce((s, i) => s + (i.costoActual ?? 0) * i.unidades, 0))}</>}{Number(adicional) > 0 ? <span className="text-ink-2"> · costo adicional {soles(Number(adicional))}</span> : null}</span>
         <div className="flex gap-2">
           <Boton variante="borde" cargando={ocupado} disabled={comentario.trim().length < 5} onClick={() => decidir(false)}>Rechazar</Boton>
-          <Boton variante={bajoCosto.length ? "peligro" : "amor"} cargando={ocupado} disabled={!completo || !!sinStock.length || (bajoCosto.length > 0 && motivoBajoCosto.trim().length < 5)} onClick={() => decidir(true)}>
+          <Boton variante={bajoCosto.length ? "peligro" : "amor"} cargando={ocupado} disabled={!completo || !!sinStock.length || !!sinLote.length || (bajoCosto.length > 0 && motivoBajoCosto.trim().length < 5)} onClick={() => decidir(true)}>
             {esVenta ? `${bajoCosto.length ? "Aprobar bajo costo y emitir" : "Aprobar y emitir"} ${t.destinoTipoDoc === "DNI" ? "boleta" : "factura"}` : "Aprobar traslado"}
           </Boton>
         </div>
@@ -309,7 +314,7 @@ function Historial() {
             <tr key={`${t.id}-d`}><td colSpan={verPrecios ? 7 : 6} className="bg-foil/40">
               <p className="text-[13px] text-ink-2">{t.motivo}{t.decididoPor ? ` · ${t.estado === "APROBADA" ? "aprobó" : "rechazó"} ${t.decididoPor}, ${fechaHora(t.decididoEn)}` : ""}{t.vendedor ? ` · venta a nombre de ${t.vendedor}` : ""}{t.comentario ? ` · «${t.comentario}»` : ""}</p>
               <ul className="mt-2 space-y-1 text-[13px]">{t.items.map((i) => (
-                <li key={i.id}><b>{i.producto}</b> · {i.lote ? `lote ${i.lote}` : "lote automático (FEFO)"} · {numero(i.unidades)} und.{verPrecios && i.precioUnitario != null ? ` · ${soles(i.precioUnitario)} c/u` : ""}{verPrecios && i.costoUnitario != null ? ` · costo ${soles(i.costoUnitario)} c/u` : ""}</li>
+                <li key={i.id}><b>{i.producto}</b> · {i.lote ? `lote ${i.lote}${i.vencimiento ? ` (vence ${vence(i.vencimiento)})` : ""}` : "sin lote"}{i.registroSanitario ? ` · R.S. ${i.registroSanitario}` : ""} · {numero(i.unidades)} und.{verPrecios && i.precioUnitario != null ? ` · ${soles(i.precioUnitario)} c/u` : ""}{verPrecios && i.costoUnitario != null ? ` · costo ${soles(i.costoUnitario)} c/u` : ""}</li>
               ))}</ul>
               {verPrecios && t.estado === "APROBADA" ? <p className="text-[13px] mt-2">Total {soles(t.totalVenta)} · costo de la mercadería {soles(t.costoTotal)}{Number(t.costoAdicional) > 0 ? ` · costo adicional ${soles(t.costoAdicional)}` : ""}</p> : null}
             </td></tr>

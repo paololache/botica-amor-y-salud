@@ -10,7 +10,7 @@ type Detalle = {
     id: number; serie: string; numero: number; fecha: string; tipoComprobante: "BOLETA" | "FACTURA" | "NOTA_VENTA"; subtotal: number; igv: number; descuento: number; total: number;
     estado: string; cpeEstado: string; receta: { medico: string; cmp: string; numero: string } | null;
   };
-  items: { producto: string; presentacion: string; lote: string; vencimiento: string; cantidad: number; precio: number; subtotal: number }[];
+  items: { producto: string; presentacion: string; lote: string; vencimiento: string; registroSanitario: string | null; cantidad: number; precio: number; subtotal: number }[];
   pagos: { medio: string; monto: number }[];
   cliente: { tipoDoc: string; numero: string; nombre: string } | null;
   vendedor: string | null;
@@ -26,15 +26,18 @@ const cant = (n: number) => String(Number(Number(n).toFixed(3)));
 const fecha = (f: string) => new Intl.DateTimeFormat("es-PE", { timeZone: "America/Lima", day: "2-digit", month: "2-digit", year: "numeric" }).format(new Date(f));
 const hora = (f: string) => new Intl.DateTimeFormat("es-PE", { timeZone: "America/Lima", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(f));
 
-/** Una línea por producto y presentación: la venta guarda una fila por lote (FEFO), el comprobante las agrupa. */
+/**
+ * Una línea por producto y presentación: la venta guarda una fila por lote, el comprobante las agrupa
+ * y siempre muestra cada lote con su vencimiento y el registro sanitario del producto.
+ */
 function agrupar(items: Detalle["items"]) {
-  const out: { descripcion: string; cantidad: number; precio: number; importe: number; lotes: string[] }[] = [];
+  const out: { descripcion: string; cantidad: number; precio: number; importe: number; lotes: string[]; registroSanitario: string | null }[] = [];
   for (const it of items) {
     const descripcion = `${it.producto} · ${it.presentacion}`;
     const x = out.find((o) => o.descripcion === descripcion && o.precio === it.precio);
     const lote = `${it.lote} (V. ${vence(it.vencimiento)})`;
     if (x) { x.cantidad += Number(it.cantidad); x.importe += Number(it.subtotal); if (!x.lotes.includes(lote)) x.lotes.push(lote); }
-    else out.push({ descripcion, cantidad: Number(it.cantidad), precio: Number(it.precio), importe: Number(it.subtotal), lotes: [lote] });
+    else out.push({ descripcion, cantidad: Number(it.cantidad), precio: Number(it.precio), importe: Number(it.subtotal), lotes: [lote], registroSanitario: it.registroSanitario });
   }
   return out;
 }
@@ -42,9 +45,9 @@ function agrupar(items: Detalle["items"]) {
 function notas(d: Detalle) {
   const t = d.venta.tipoComprobante;
   if (t === "NOTA_VENTA") return ["Documento de control interno. No es un comprobante de pago."];
-  const out = [`Representación impresa de la ${TITULO[t].toLowerCase()}.`, `Estado SUNAT: ${d.venta.cpeEstado === "ACEPTADO" ? "aceptado" : "pendiente de envío"}.`];
-  if (d.sunatModo === "simulado") out.push("Emitido en modo de prueba: sin validez tributaria.");
-  return out;
+  // La botica declara sus comprobantes directamente con SUNAT: el impreso no muestra estados de envío.
+  if (d.sunatModo !== "manual") return [`Representación impresa de la ${TITULO[t].toLowerCase()}.`, ...(d.sunatModo === "simulado" ? ["Emitido en modo de prueba: sin validez tributaria."] : [])];
+  return [];
 }
 
 export function Comprobante({ id, formato, imprimir }: { id: number; formato: "ticket" | "a4"; imprimir: boolean }) {
@@ -66,7 +69,7 @@ export function Comprobante({ id, formato, imprimir }: { id: number; formato: "t
     <div className="min-h-dvh bg-foil py-6 print:bg-white print:p-0">
       <style>{pagina}</style>
       <div className="no-imprimir mx-auto mb-5 flex max-w-[210mm] flex-wrap items-center justify-center gap-2 px-4">
-        <Link replace href={`/comprobante/${id}?formato=ticket`} className={`inline-flex h-9 items-center gap-2 rounded-xl border px-3 text-[13.5px] font-semibold ${formato === "ticket" ? "border-vino bg-vino text-white" : "border-foil-3 bg-papel text-ink-2"}`}><ReceiptText size={16} /> Ticket 80 mm</Link>
+        <Link replace href={`/comprobante/${id}?formato=ticket`} className={`inline-flex h-9 items-center gap-2 rounded-xl border px-3 text-[13.5px] font-semibold ${formato === "ticket" ? "border-vino bg-vino text-white" : "border-foil-3 bg-papel text-ink-2"}`}><ReceiptText size={16} /> Impresión 80 mm</Link>
         <Link replace href={`/comprobante/${id}?formato=a4`} className={`inline-flex h-9 items-center gap-2 rounded-xl border px-3 text-[13.5px] font-semibold ${formato === "a4" ? "border-vino bg-vino text-white" : "border-foil-3 bg-papel text-ink-2"}`}><FileText size={16} /> A4</Link>
         <button onClick={() => window.print()} disabled={!d} className="inline-flex h-9 items-center gap-2 rounded-xl bg-amor px-4 text-[13.5px] font-semibold text-white hover:bg-amor-2 disabled:opacity-50"><Printer size={16} /> Imprimir</button>
         <button onClick={() => window.close()} className="inline-flex h-9 items-center gap-2 rounded-xl px-3 text-[13.5px] font-semibold text-ink-2 hover:bg-foil-2"><X size={16} /> Cerrar</button>
@@ -114,6 +117,7 @@ function Ticket({ d, lineas }: { d: Detalle; lineas: Lineas }) {
                 <span className="block">{l.descripcion}</span>
                 <span className="block">{cant(l.cantidad)} x {m2(l.precio)}</span>
                 <span className="block text-[10px] text-black/70">Lote {l.lotes.join(", ")}</span>
+                <span className="block text-[10px] text-black/70">R.S. {l.registroSanitario ?? "—"}</span>
               </td>
               <td className="pt-1.5 text-right tabular-nums">{m2(l.importe)}</td>
             </tr>
@@ -175,7 +179,7 @@ function HojaA4({ d, lineas }: { d: Detalle; lineas: Lineas }) {
       <table className="mt-5 w-full border-collapse">
         <thead>
           <tr className="border-y-2 border-black text-left">
-            <th className="py-2 pr-2 font-semibold">Cant.</th><th className="py-2 pr-2 font-semibold">Descripción</th><th className="py-2 pr-2 font-semibold">Lote / Venc.</th>
+            <th className="py-2 pr-2 font-semibold">Cant.</th><th className="py-2 pr-2 font-semibold">Descripción</th><th className="py-2 pr-2 font-semibold">Lote / Venc.</th><th className="py-2 pr-2 font-semibold">R. sanitario</th>
             <th className="py-2 pr-2 text-right font-semibold">P. unit.</th><th className="py-2 text-right font-semibold">Importe</th>
           </tr>
         </thead>
@@ -185,6 +189,7 @@ function HojaA4({ d, lineas }: { d: Detalle; lineas: Lineas }) {
               <td className="py-2 pr-2 tabular-nums">{cant(l.cantidad)}</td>
               <td className="py-2 pr-2">{l.descripcion}</td>
               <td className="py-2 pr-2 text-[11px]">{l.lotes.join(", ")}</td>
+              <td className="py-2 pr-2 text-[11px] whitespace-nowrap">{l.registroSanitario ?? "—"}</td>
               <td className="py-2 pr-2 text-right tabular-nums">{m2(l.precio)}</td>
               <td className="py-2 text-right tabular-nums">{m2(l.importe)}</td>
             </tr>

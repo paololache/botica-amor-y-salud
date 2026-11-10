@@ -64,7 +64,7 @@ export function HistoricoVentas() {
           <div className={cargando ? "opacity-60 transition-opacity" : "transition-opacity"}>
             <div className="flex flex-wrap items-baseline gap-x-3 mb-4">
               <span className="cifra text-[30px] leading-none">{soles(datos.total)}</span>
-              <span className="text-[13px] text-ink-2">{numero(datos.tickets)} {datos.tickets === 1 ? "ticket" : "tickets"} · con IGV, sin anuladas</span>
+              <span className="text-[13px] text-ink-2">{numero(datos.tickets)} {datos.tickets === 1 ? "venta" : "ventas"} · con IGV, sin anuladas</span>
             </div>
             {datos.tickets === 0 ? <Vacio titulo="Sin ventas con estos filtros">Prueba con otro periodo o con todos los turnos.</Vacio> : (
               <>
@@ -78,7 +78,7 @@ export function HistoricoVentas() {
                     <div className="absolute inset-0 flex">
                       {barras.map((x, i) => (
                         <button key={x.clave} type="button" className={`relative flex-1 min-w-0 h-full ${datos.nivel === "hora" ? "cursor-default" : ""}`}
-                          aria-label={`${x.detalle}: ${soles(x.total)}, ${x.tickets} tickets`}
+                          aria-label={`${x.detalle}: ${soles(x.total)}, ${x.tickets} ${x.tickets === 1 ? "venta" : "ventas"}`}
                           onMouseEnter={() => setActiva(i)} onFocus={() => setActiva(i)} onBlur={() => setActiva(null)} onClick={() => bajar(x)}>
                           <span className={`absolute bottom-0 left-px right-px mx-auto max-w-7 rounded-t transition-colors ${activa === i ? "bg-petroleo" : "bg-petroleo-3"}`}
                             style={{ height: x.total > 0 ? `max(2px, ${(x.total / tope) * 100}%)` : 0 }} />
@@ -89,7 +89,7 @@ export function HistoricoVentas() {
                       <div role="status" className="absolute z-10 pointer-events-none rounded-lg bg-ink text-white px-2.5 py-1.5 text-[12px] whitespace-nowrap shadow-lg"
                         style={{ bottom: `calc(${(b.total / tope) * 100}% + 6px)`, ...(activa / barras.length > 0.6 ? { right: `${100 - ((activa + 1) / barras.length) * 100}%` } : { left: `${(activa / barras.length) * 100}%` }) }}>
                         <div className="font-semibold">{b.detalle}</div>
-                        <div>{soles(b.total)} · {b.tickets} {b.tickets === 1 ? "ticket" : "tickets"}</div>
+                        <div>{soles(b.total)} · {b.tickets} {b.tickets === 1 ? "venta" : "ventas"}</div>
                       </div>
                     ) : null}
                   </div>
@@ -100,7 +100,7 @@ export function HistoricoVentas() {
                 <details className="mt-4 text-[13px]">
                   <summary className="cursor-pointer font-semibold text-ink-2">Ver como tabla</summary>
                   <div className="overflow-x-auto mt-2 max-h-72 overflow-y-auto"><table className="tabla">
-                    <thead><tr><th>Periodo</th><th className="num">Ventas</th><th className="num">Tickets</th></tr></thead>
+                    <thead><tr><th>Periodo</th><th className="num">Monto</th><th className="num">N.º de ventas</th></tr></thead>
                     <tbody>{barras.filter((x) => x.tickets > 0).map((x) => <tr key={x.clave}><td>{x.detalle}</td><td className="num">{soles(x.total)}</td><td className="num">{numero(x.tickets)}</td></tr>)}</tbody>
                   </table></div>
                 </details>

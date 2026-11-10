@@ -15,8 +15,8 @@ const { metrica, reporteGuardado } = schema;
 export const BASE: Record<string, { nombre: string; unidad: string; sql: string; sensible?: boolean }> = {
   ventas: { nombre: "Ventas S/", unidad: "SOLES", sql: "sum(vd.subtotal)" },
   unidades: { nombre: "Unidades", unidad: "UNIDADES", sql: "sum(vd.unidades)" },
-  tickets: { nombre: "Tickets", unidad: "NUMERO", sql: "count(distinct v.id)" },
-  tickets_complemento: { nombre: "Tickets con complemento", unidad: "NUMERO", sql: "count(distinct case when vd.origen = 'SUGERENCIA' then v.id end)" },
+  tickets: { nombre: "N.º de ventas", unidad: "NUMERO", sql: "count(distinct v.id)" },
+  tickets_complemento: { nombre: "Ventas con complemento", unidad: "NUMERO", sql: "count(distinct case when vd.origen = 'SUGERENCIA' then v.id end)" },
   descuentos: { nombre: "Descuentos S/", unidad: "SOLES", sql: "sum(vd.descuento)" },
   comision: { nombre: "Comisión S/", unidad: "SOLES", sql: "coalesce(sum(c.monto), 0)" },
   ventas_campana: { nombre: "Ventas en campaña S/", unidad: "SOLES", sql: "sum(case when c.id is not null then vd.subtotal else 0 end)" },
@@ -252,7 +252,7 @@ export async function reporteEspecial(db: Db, user: Sesion, id: string, q: { des
         return {
           id: s.id, sesion: String(s.id).padStart(6, "0"), cajero: s.cajero, turno: s.turno[0] + s.turno.slice(1).toLowerCase(), abiertaEn: s.abiertaEn, cerradaEn: s.cerradaEn,
           saldoEfectivo: s.saldoEfectivo, saldoVirtual: s.saldoVirtual, diferencia: dif,
-          resultado: s.estado === "EN_CIERRE" ? "Por validar" : dif < -0.004 ? "Faltante" : dif > 0.004 ? "Sobrante" : "Cuadrado",
+          resultado: s.estado === "EN_CIERRE" ? "Por aprobar" : dif < -0.004 ? "Faltante" : dif > 0.004 ? "Sobrante" : "Cuadrado",
         };
       }),
     };

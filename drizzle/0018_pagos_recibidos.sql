@@ -1,0 +1,1 @@
+ALTER TABLE "sesion_caja" ADD COLUMN "pagos_recibidos" jsonb;

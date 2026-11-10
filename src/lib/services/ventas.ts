@@ -10,7 +10,6 @@ import { asignarFEFO, bloquearProductos, registrarKardex, sumarLote } from "./in
 import { campanaActiva, preciosCampana } from "./campanas";
 import { revertirComisionesVenta, misComisiones } from "./comisiones";
 import { metaDelDia } from "./metas";
-import { sesionDelUsuario } from "./caja";
 import { parametros } from "./parametros";
 import { enviarCpe } from "./sunat";
 
@@ -41,10 +40,33 @@ export async function siguienteNumero(tx: Db, serie: string): Promise<number> {
 }
 
 export async function crearVenta(db: Db, user: Sesion, input: EntradaVenta) {
-  const hoy = hoyLima();
-  const p = await parametros(db);
-  const sesion = await sesionDelUsuario(db, user.id);
+  // Sin importar el módulo de caja (que a su vez usa este): la sesión abierta del usuario.
+  const [sesion] = await db.select({ id: schema.sesionCaja.id, estado: schema.sesionCaja.estado }).from(schema.sesionCaja)
+    .where(and(eq(schema.sesionCaja.usuarioId, user.id), eq(schema.sesionCaja.estado, "ABIERTA"))).orderBy(desc(schema.sesionCaja.id)).limit(1);
   if (!sesion || sesion.estado !== "ABIERTA") throw new ErrorNegocio("SIN_CAJA", "Abre tu caja para poder vender (RN-01).");
+  const resultado = await registrarVenta(db, { actor: user, vendedor: user, sesionId: sesion.id, input });
+  const [mias, meta] = await Promise.all([misComisiones(db, user.id), metaDelDia(db, user.id)]);
+  return { ...resultado, comisionHoy: mias.hoy, comisionMes: mias.mes, meta };
+}
+
+type OpcionesVenta = {
+  /** Quien registra (sus permisos deciden descuentos y precios bajo costo). */
+  actor: Sesion;
+  /** A quien se le atribuye la venta: su reporte de ventas y sus comisiones. */
+  vendedor: Pick<Sesion, "id" | "roles">;
+  sesionId: number;
+  input: EntradaVenta;
+  /** Fecha de la venta (por defecto, ahora). Al regularizar un cierre es la del ingreso original. */
+  fecha?: Date;
+  /** Si los productos suman más que este monto, la diferencia se aplica como descuento para cuadrar con lo cobrado. */
+  totalObjetivo?: number;
+};
+
+/** Registra la venta: descuenta el stock por FEFO, deja el kardex, los pagos y las comisiones del vendedor. */
+export async function registrarVenta(db: Db, { actor: user, vendedor, sesionId, input, fecha, totalObjetivo }: OpcionesVenta) {
+  const hoyReal = hoyLima();
+  const hoy = fecha ? hoyLima(fecha) : hoyReal;
+  const p = await parametros(db);
 
   const presIds = input.items.map((i) => i.presentacionId);
   const pres = await db.select({ p: presentacion, prod: producto }).from(presentacion).innerJoin(producto, eq(producto.id, presentacion.productoId))
@@ -67,6 +89,19 @@ export async function crearVenta(db: Db, user: Sesion, input: EntradaVenta) {
     return { ...it, pres: x.p, prod: x.prod, unidades: it.cantidad * x.p.factor, bruto, desc, subtotal: r2(bruto - desc) };
   });
   total = r2(total); descuento = r2(descuento);
+  if (totalObjetivo !== undefined) {
+    if (total < totalObjetivo - 0.005) throw new ErrorNegocio("MONTO_MAYOR", `Los productos suman ${total.toFixed(2)} y se cobró ${totalObjetivo.toFixed(2)}. Agrega los productos que faltan.`, 422);
+    const extra = r2(total - totalObjetivo);
+    if (extra > 0) {
+      let resta = extra;
+      lineas.forEach((l, i) => {
+        const parte = i === lineas.length - 1 ? resta : Math.min(resta, r2(extra * l.subtotal / total));
+        resta = r2(resta - parte);
+        l.desc = r2(l.desc + parte); l.subtotal = r2(l.subtotal - parte);
+      });
+      total = r2(totalObjetivo); descuento = r2(descuento + extra);
+    }
+  }
 
   // Regla de negocio: un descuento no puede dejar el producto por debajo del costo + IGV; vender bajo costo es decisión
   // solo del administrador (el precio de lista y el de campaña ya los fija él, por eso no se bloquean).
@@ -105,15 +140,15 @@ export async function crearVenta(db: Db, user: Sesion, input: EntradaVenta) {
     }
     const subtotal = r2(total / 1.18);
     const [v] = await tx.insert(venta).values({
-      sesionId: sesion.id, usuarioId: user.id, clienteId, tipoComprobante: input.tipoComprobante, serie, numero,
+      sesionId, usuarioId: vendedor.id, clienteId, ...(fecha ? { fecha } : {}), tipoComprobante: input.tipoComprobante, serie, numero,
       subtotal, igv: r2(total - subtotal), descuento, total, receta: input.receta ?? null, cpeEstado: "PENDIENTE",
     }).returning();
     const ref = `${serie}-${String(numero).padStart(6, "0")}`;
     let costoTotal = 0, comisionVenta = 0;
     // El administrador vende al mismo precio (la campaña no cambia el precio), pero no comisiona.
-    const comisiona = !tieneRol(user.roles, "ADMIN");
+    const comisiona = !tieneRol(vendedor.roles, "ADMIN");
     for (const l of lineas) {
-      const asign = await asignarFEFO(tx, l.prod.id, l.unidades, hoy);
+      const asign = await asignarFEFO(tx, l.prod.id, l.unidades, hoyReal);
       let restante = l.subtotal;
       for (let i = 0; i < asign.length; i++) {
         const a = asign[i];
@@ -131,7 +166,7 @@ export async function crearVenta(db: Db, user: Sesion, input: EntradaVenta) {
           const base = r2(parte / 1.18);
           const monto = r2(base * camp.porcentaje / 100);
           comisionVenta += monto;
-          await tx.insert(comision).values({ ventaId: v.id, ventaDetalleId: d.id, usuarioId: user.id, campanaId: camp.id, porcentaje: camp.porcentaje, base, monto, origen: l.origen, fecha: hoy });
+          await tx.insert(comision).values({ ventaId: v.id, ventaDetalleId: d.id, usuarioId: vendedor.id, campanaId: camp.id, porcentaje: camp.porcentaje, base, monto, origen: l.origen, fecha: hoy });
         }
       }
     }
@@ -142,8 +177,7 @@ export async function crearVenta(db: Db, user: Sesion, input: EntradaVenta) {
 
   const cpeEstado = await enviarCpe(input.tipoComprobante);
   await db.update(venta).set({ cpeEstado }).where(eq(venta.id, resultado.id));
-  const [mias, meta] = await Promise.all([misComisiones(db, user.id), metaDelDia(db, user.id)]);
-  return { ...resultado, cpeEstado, comisionHoy: mias.hoy, comisionMes: mias.mes, meta };
+  return { ...resultado, cpeEstado };
 }
 
 export const esquemaAnulacion = z.object({ motivo: texto(5) });
@@ -186,7 +220,7 @@ export async function listarVentas(db: Db, user: Sesion, dias = 7) {
 export async function detalleVenta(db: Db, id: number, user?: Sesion) {
   const [v] = await db.select().from(venta).where(eq(venta.id, id));
   if (!v) throw new ErrorNegocio("NO_EXISTE", "La venta no existe.", 404);
-  const items = await db.select({ producto: producto.nombre, presentacion: presentacion.nombre, lote: lote.numero, vencimiento: lote.vencimiento, cantidad: ventaDetalle.cantidad, precio: ventaDetalle.precioUnitario, subtotal: ventaDetalle.subtotal, costoUnitario: ventaDetalle.costoUnitario })
+  const items = await db.select({ producto: producto.nombre, presentacion: presentacion.nombre, lote: lote.numero, vencimiento: lote.vencimiento, registroSanitario: producto.registroSanitario, cantidad: ventaDetalle.cantidad, precio: ventaDetalle.precioUnitario, subtotal: ventaDetalle.subtotal, costoUnitario: ventaDetalle.costoUnitario })
     .from(ventaDetalle).innerJoin(producto, eq(producto.id, ventaDetalle.productoId)).innerJoin(presentacion, eq(presentacion.id, ventaDetalle.presentacionId)).innerJoin(lote, eq(lote.id, ventaDetalle.loteId))
     .where(eq(ventaDetalle.ventaId, id));
   const pagos = await db.select().from(ventaPago).where(eq(ventaPago.ventaId, id));

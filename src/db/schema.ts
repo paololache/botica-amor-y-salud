@@ -91,14 +91,19 @@ export const sesionCaja = pgTable("sesion_caja", {
   observacionApertura: text("observacion_apertura"),
   conteoCierre: jsonb("conteo_cierre").$type<Record<string, number>>(),
   contado: jsonb("contado").$type<Record<string, number>>(),
+  // Lo que el cajero escribió al cerrar (efectivo y cada medio virtual); "contado" se recalcula al regularizar a partir de esto.
+  contadoDeclarado: jsonb("contado_declarado").$type<Record<string, number>>(),
   esperado: jsonb("esperado").$type<Record<string, number>>(),
   diferencia: money("diferencia"),
   fondoSiguiente: money("fondo_siguiente"),
   retiro: money("retiro"),
   pagosNoConfirmados: jsonb("pagos_no_confirmados").$type<string[]>(), // pagos virtuales que el cajero no validó al cerrar
+  pagosRecibidos: jsonb("pagos_recibidos").$type<Record<string, number>>(), // monto que el cajero verificó en la app por cada pago virtual
   observacion: text("observacion"),
   validadoPor: integer("validado_por").references(() => usuario.id),
-  estado: text("estado").notNull().default("ABIERTA"), // ABIERTA | CERRADA
+  validadoEn: ts("validado_en"),
+  observacionValidacion: text("observacion_validacion"), // lo que el administrador detalla al aprobar un cierre con observaciones
+  estado: text("estado").notNull().default("ABIERTA"), // ABIERTA | EN_CIERRE (con observaciones, espera aprobación) | CERRADA
 }, (t) => [index("sesion_estado_idx").on(t.estado)]);
 
 export const movimientoCaja = pgTable("movimiento_caja", {
@@ -111,6 +116,8 @@ export const movimientoCaja = pgTable("movimiento_caja", {
   comprobante: text("comprobante"),
   usuarioId: integer("usuario_id").notNull().references(() => usuario.id),
   fecha: ts("fecha").notNull().defaultNow(),
+  // Ingreso que el administrador convirtió en venta al regularizar el cierre: deja de contar como ingreso (lo cuenta la venta).
+  ventaId: integer("venta_id"),
 });
 
 export const cliente = pgTable("cliente", {
@@ -425,3 +432,26 @@ export const metaMensual = pgTable("meta_mensual", {
   actualizadoPor: integer("actualizado_por").references(() => usuario.id),
   actualizadoEn: ts("actualizado_en").notNull().defaultNow(),
 }, (t) => [uniqueIndex("meta_mensual_mes_usuario_uq").on(t.mes, sql`coalesce(${t.usuarioId}, 0)`)]);
+
+/** Lo que el administrador completa después del cierre sobre un pago virtual o ingreso que el cajero no confirmó. */
+export const regularizacionCierre = pgTable("regularizacion_cierre", {
+  id: serial("id").primaryKey(),
+  sesionId: integer("sesion_id").notNull().references(() => sesionCaja.id),
+  clave: text("clave").notNull(), // V<venta_pago.id> | M<movimiento_caja.id>
+  origen: text("origen").notNull(), // Venta | Ingreso
+  accion: text("accion").notNull(), // CONFIRMADO | CAMBIO_MEDIO | VENTA_ANULADA | CONVERTIDO_EN_VENTA | REPOSICION | CARGO_CAJERO | SOBRANTE_DEVUELTO | SOBRANTE_INGRESO | AJUSTE_CONTEO
+  referencia: text("referencia"),
+  medioAnterior: medioEnum("medio_anterior"),
+  medio: medioEnum("medio"),
+  monto: money("monto").notNull(),
+  operacion: text("operacion"), // n.º de operación o voucher
+  ventaId: integer("venta_id").references(() => venta.id),
+  comentario: text("comentario"),
+  usuarioId: integer("usuario_id").notNull().references(() => usuario.id),
+  fecha: ts("fecha").notNull().defaultNow(),
+  // Cargo al cajero (faltante de efectivo que asume): a quién y si ya lo pagó.
+  cargoUsuarioId: integer("cargo_usuario_id").references(() => usuario.id),
+  cargoEstado: text("cargo_estado"), // PENDIENTE | PAGADO
+  cargoPagadoEn: ts("cargo_pagado_en"),
+  cargoPagadoPor: integer("cargo_pagado_por").references(() => usuario.id),
+}, (t) => [index("regularizacion_sesion_idx").on(t.sesionId), index("regularizacion_cargo_idx").on(t.cargoUsuarioId, t.cargoEstado)]);

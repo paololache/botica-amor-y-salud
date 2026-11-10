@@ -7,16 +7,36 @@ import { api, useDatos, soles, fechaHora } from "@/lib/cliente";
 import { Boton, Cargando, Entrada, Insignia, Tarjeta, useAviso } from "@/components/ui";
 import { useUsuario } from "@/components/shell";
 import { moduloDeRuta, tieneRol } from "@/lib/permisos";
+import { Regularizar, type Pendiente } from "./regularizar";
+import { RegularizarEfectivo, type EstadoEfectivo } from "./efectivo";
 
 type Rep = {
-  sesion: { id: number; caja: string; cajero: string; turno: string; abiertaEn: string; cerradaEn: string | null; estado: string; observacionApertura: string | null; observacion: string | null; validadoPor: string | null };
+  sesion: {
+    id: number; caja: string; cajero: string; usuarioId: number; turno: string; abiertaEn: string; cerradaEn: string | null; estado: string;
+    observacionApertura: string | null; observacion: string | null; validadoPor: string | null; validadoEn: string | null; observacionValidacion: string | null;
+  };
   fondoInicial: number; ventas: { total: number; porComprobante: { tipo: string; cantidad: number; total: number }[] }; anuladas: { cantidad: number; total: number };
   movimientos: { tipo: string; concepto: string; medio: string; monto: number }[]; arqueo: { medio: string; esperado: number; contado: number; diferencia: number }[];
   saldoEfectivo: number; saldoVirtual: number;
-  virtuales: { clave: string; origen: string; referencia: string; medio: string; monto: number; fecha: string; confirmado: boolean }[];
+  virtuales: (Pendiente & { ventaId: number | null; confirmado: boolean; recibido: number | null; regularizacion: Regularizacion | null })[];
+  regularizaciones: Regularizacion[];
+  vendedores: { id: number; nombre: string }[];
+  observaciones: string[];
+  declarado: Record<string, number> | null;
+  efectivo: EstadoEfectivo;
   diferencia: number; fondoSiguiente: number; retiro: number; comisiones: number; margen?: number | null; costoVentas?: number; ganancia?: number;
   transacciones: Transaccion[];
   eliminados: { id: number; fecha: string; eliminadoPor: string; porOtraPersona: boolean; tipo: string; concepto: string; medio: string; monto: number; motivo: string | null }[];
+};
+
+type Regularizacion = {
+  id: number; clave: string; origen: string; accion: string; referencia: string | null; medioAnterior: string | null; medio: string | null; monto: number;
+  operacion: string | null; ventaId: number | null; comentario: string | null; fecha: string; usuario: string;
+  cargoEstado: string | null; cargoPagadoEn: string | null;
+};
+const ACCION: Record<string, string> = {
+  CONFIRMADO: "Confirmado después del cierre", CAMBIO_MEDIO: "Cambió el medio de pago", VENTA_ANULADA: "Venta anulada: no llegó el pago", CONVERTIDO_EN_VENTA: "Ingreso convertido en venta",
+  REPOSICION: "Dinero completado", CARGO_CAJERO: "Cargo al cajero", SOBRANTE_DEVUELTO: "Sobrante devuelto al cliente", SOBRANTE_INGRESO: "Sobrante como ingreso de la botica", AJUSTE_CONTEO: "Recuento del efectivo",
 };
 
 type Transaccion = {
@@ -90,7 +110,7 @@ function ListaTransacciones({ filas, conGanancia, ganancia }: { filas: Transacci
                   {conGanancia ? <td className={`num ${t.ganancia == null ? "text-ink-3" : t.ganancia < 0 ? "text-rojo font-semibold" : "text-ok font-semibold"}`}>{t.ganancia == null ? "—" : soles(t.ganancia)}</td> : null}
                   <td className="no-imprimir text-right whitespace-nowrap">{t.ventaId ? (
                     <>
-                      <a href={`/comprobante/${t.ventaId}?formato=ticket`} target="_blank" rel="noopener" className={ICONO} title="Ver ticket" aria-label={`Ver ticket de ${t.numero}`}><Receipt size={15} /></a>
+                      <a href={`/comprobante/${t.ventaId}?formato=ticket`} target="_blank" rel="noopener" className={ICONO} title="Ver comprobante 80 mm" aria-label={`Ver comprobante ${t.numero} en 80 mm`}><Receipt size={15} /></a>
                       <a href={`/comprobante/${t.ventaId}?formato=a4`} target="_blank" rel="noopener" className={`${ICONO} ml-1.5`} title="Ver en A4" aria-label={`Ver ${t.numero} en A4`}><FileText size={15} /></a>
                     </>
                   ) : null}</td>
@@ -118,6 +138,8 @@ export default function ReporteCierre({ params }: { params: Promise<{ id: string
   const avisar = useAviso();
   const { datos, error, recargar } = useDatos<Rep>(`/api/caja/sesiones/${id}`);
   const [obs, setObs] = useState("");
+  const [regularizar, setRegularizar] = useState<Pendiente | null>(null);
+  const [aprobando, setAprobando] = useState(false);
   const impreso = useRef(false);
   useEffect(() => {
     if (!datos || impreso.current || new URLSearchParams(window.location.search).get("imprimir") !== "1") return;
@@ -133,6 +155,7 @@ export default function ReporteCierre({ params }: { params: Promise<{ id: string
   );
   if (!datos) return <Cargando alto="h-96" />;
   const s = datos.sesion;
+  const conAjuste = !!datos.declarado && datos.arqueo.some((a) => Math.abs((datos.declarado?.[a.medio] ?? 0) - a.contado) > 0.004);
   const ingresos = datos.movimientos.filter((m) => m.tipo === "INGRESO").reduce((a, m) => a + m.monto, 0);
   const egresos = datos.movimientos.filter((m) => m.tipo === "EGRESO").reduce((a, m) => a + m.monto, 0);
   const fila = (t: string, v: string, fuerte = false) => <div className={`flex justify-between py-2 border-b border-foil text-[14px] ${fuerte ? "font-semibold" : ""}`}><span className={fuerte ? "" : "text-ink-2"}>{t}</span><span>{v}</span></div>;
@@ -155,9 +178,15 @@ export default function ReporteCierre({ params }: { params: Promise<{ id: string
           <div className="text-right">
             <p className="text-[12.5px] text-ink-2 font-semibold">Diferencia</p>
             <p className={`cifra text-[38px] leading-none mt-1 ${datos.diferencia < -0.004 ? "text-rojo" : "text-ok"}`}>{datos.diferencia > 0.004 ? "+" : datos.diferencia < -0.004 ? "−" : ""}{soles(Math.abs(datos.diferencia))}</p>
-            <div className="mt-2">{s.estado === "EN_CIERRE" ? <Insignia tono="ambar">Por validar</Insignia> : <Insignia tono="ok">Cerrada</Insignia>}</div>
+            <div className="mt-2">{s.estado === "EN_CIERRE" ? <Insignia tono="ambar">Por aprobar</Insignia> : <Insignia tono="ok">Cerrada</Insignia>}</div>
           </div>
         </div>
+        {s.estado === "EN_CIERRE" ? (
+          <div className="no-imprimir mt-5 rounded-2xl bg-ambar-claro px-4 py-3 text-[13.5px]">
+            <p className="font-semibold text-[#8a5b00]">Cierre con observaciones: espera la aprobación del administrador</p>
+            {datos.observaciones.length ? <ul className="mt-1 list-disc pl-5 text-ink-2">{datos.observaciones.map((o) => <li key={o}>{o}</li>)}</ul> : <p className="mt-1 text-ink-2">Ya no quedan observaciones pendientes; falta la aprobación.</p>}
+          </div>
+        ) : null}
         <dl className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-6">
           {[["Apertura", fechaHora(s.abiertaEn)], ["Cierre", fechaHora(s.cerradaEn)], ["Saldo final efectivo", soles(datos.saldoEfectivo)], ["Saldo final virtual", soles(datos.saldoVirtual)]].map(([t, v]) => (
             <div key={t} className="rounded-2xl bg-foil px-4 py-3"><dt className="text-[12px] text-ink-2 font-semibold">{t}</dt><dd className="font-semibold text-[15px] mt-0.5 tabular-nums">{v}</dd></div>
@@ -168,10 +197,10 @@ export default function ReporteCierre({ params }: { params: Promise<{ id: string
           <section>
             <h2 className="font-display font-semibold text-[15px] mb-2">Cierre de caja por medio de pago</h2>
             <div className="overflow-x-auto"><table className="tabla">
-              <thead><tr><th>Medio</th><th className="num">Sistema</th><th className="num">Declarado</th><th className="num">Diferencia</th></tr></thead>
+              <thead><tr><th>Medio</th><th className="num">Sistema</th>{conAjuste ? <th className="num">Declaró el cajero</th> : null}<th className="num">{conAjuste ? "Con regularización" : "Declarado"}</th><th className="num">Diferencia</th></tr></thead>
               <tbody>
                 {datos.arqueo.map((a) => (
-                  <tr key={a.medio}><td>{a.medio[0] + a.medio.slice(1).toLowerCase()}</td><td className="num">{soles(a.esperado)}</td><td className="num">{soles(a.contado)}</td><td className={`num font-semibold ${Math.abs(a.diferencia) > 0.009 ? "text-rojo" : ""}`}>{soles(a.diferencia)}</td></tr>
+                  <tr key={a.medio}><td>{a.medio[0] + a.medio.slice(1).toLowerCase()}</td><td className="num">{soles(a.esperado)}</td>{conAjuste ? <td className="num text-ink-2">{soles(datos.declarado?.[a.medio] ?? 0)}</td> : null}<td className="num">{soles(a.contado)}</td><td className={`num font-semibold ${Math.abs(a.diferencia) > 0.009 ? "text-rojo" : ""}`}>{soles(a.diferencia)}</td></tr>
                 ))}
               </tbody>
             </table></div>
@@ -191,11 +220,39 @@ export default function ReporteCierre({ params }: { params: Promise<{ id: string
         {datos.virtuales?.length ? (
           <section className="mt-8">
             <h2 className="font-display font-semibold text-[15px] mb-1">Validación de pagos virtuales</h2>
-            <p className="text-[13px] text-ink-2 mb-2">{datos.virtuales.filter((v) => v.confirmado).length} de {datos.virtuales.length} confirmados por el cajero. Los no confirmados cuentan como faltante.</p>
-            <div className="overflow-x-auto"><table className="tabla"><thead><tr><th>Hora</th><th>Comprobante</th><th>Medio</th><th className="num">Monto</th><th>Estado</th></tr></thead>
+            <p className="text-[13px] text-ink-2 mb-2">
+              {datos.virtuales.filter((v) => v.confirmado).length} de {datos.virtuales.length} conformes. Los que no cuadran cuentan por el monto que registró el cajero
+              {u.roles.includes("ADMIN") ? "; regularízalos cuando verifiques qué pasó con cada uno." : " hasta que el administrador los regularice."}
+            </p>
+            <div className="overflow-x-auto"><table className="tabla"><thead><tr><th>Hora</th><th>Comprobante</th><th>Medio</th><th className="num">Monto</th><th className="num">Recibido</th><th>Estado</th><th className="no-imprimir" /></tr></thead>
               <tbody>{datos.virtuales.map((v) => (
-                <tr key={v.clave}><td>{fechaHora(v.fecha)}</td><td>{v.referencia}{v.origen === "Ingreso" ? " · ingreso" : ""}</td><td>{v.medio[0] + v.medio.slice(1).toLowerCase()}</td><td className="num">{soles(v.monto)}</td>
-                  <td>{v.confirmado ? <Insignia tono="ok">Confirmado</Insignia> : <Insignia tono="rojo">No confirmado</Insignia>}</td></tr>
+                <tr key={v.clave}><td className="whitespace-nowrap">{fechaHora(v.fecha)}</td><td>{v.referencia}{v.origen === "Ingreso" ? " · ingreso" : ""}</td><td>{MEDIO[v.medio] ?? v.medio}</td><td className="num">{soles(v.monto)}</td>
+                  <td className={`num font-semibold ${v.recibido !== null && Math.abs(v.recibido - v.monto) >= 0.005 ? (v.recibido < v.monto ? "text-rojo" : "text-ok") : ""}`}>{v.recibido !== null ? soles(v.recibido) : "—"}</td>
+                  <td>{v.regularizacion ? (
+                    <><Insignia tono="azul">Regularizado</Insignia><span className="block text-[12px] text-ink-2 mt-1">{ACCION[v.regularizacion.accion] ?? v.regularizacion.accion}{v.regularizacion.operacion ? ` · op. ${v.regularizacion.operacion}` : ""}</span></>
+                  ) : v.confirmado ? <Insignia tono="ok">Conforme</Insignia> : <Insignia tono="rojo">{v.recibido ? "No cuadra" : "No llegó"}</Insignia>}</td>
+                  <td className="no-imprimir text-right">{!v.confirmado && u.roles.includes("ADMIN") ? <Boton tam="sm" variante="borde" onClick={() => setRegularizar(v)}>Regularizar</Boton> : null}</td></tr>
+              ))}</tbody></table></div>
+          </section>
+        ) : null}
+        {u.roles.includes("ADMIN") && s.estado !== "ABIERTA" && datos.efectivo && (Math.abs(datos.efectivo.porRegularizar) > 0.004 || datos.regularizaciones.some((g) => g.origen === "Efectivo")) ? (
+          <RegularizarEfectivo sesionId={s.id} efectivo={datos.efectivo} cajero={s.cajero} alTerminar={(m) => { avisar("ok", m); recargar(); }} />
+        ) : null}
+        {datos.regularizaciones?.length ? (
+          <section className="mt-8">
+            <h2 className="font-display font-semibold text-[15px] mb-1">Regularizaciones después del cierre ({datos.regularizaciones.length})</h2>
+            <p className="text-[13px] text-ink-2 mb-2">Lo que el administrador completó después del cierre (pagos que no cuadraron y diferencias de efectivo). El cierre se recalculó con cada una.</p>
+            <div className="overflow-x-auto"><table className="tabla"><thead><tr><th>Fecha</th><th>Por</th><th>Pago</th><th>Qué se hizo</th><th className="num">Monto</th><th>Detalle</th></tr></thead>
+              <tbody>{datos.regularizaciones.map((g) => (
+                <tr key={g.id}>
+                  <td className="whitespace-nowrap">{fechaHora(g.fecha)}</td><td>{g.usuario}</td>
+                  <td>{g.origen === "Efectivo" ? "Efectivo" : g.referencia ?? g.clave}{g.origen === "Ingreso" ? " · ingreso" : ""}</td>
+                  <td>{ACCION[g.accion] ?? g.accion}{g.accion === "CAMBIO_MEDIO" && g.medioAnterior && g.medio ? <span className="block text-[12px] text-ink-2">{MEDIO[g.medioAnterior]} → {MEDIO[g.medio]}</span> : null}
+                    {g.accion === "CARGO_CAJERO" ? <span className="block mt-0.5">{g.cargoEstado === "PAGADO" ? <Insignia tono="ok">Pagado</Insignia> : <Insignia tono="ambar">Pendiente de pago</Insignia>}</span> : null}
+                    {g.accion === "CONVERTIDO_EN_VENTA" && g.ventaId ? <a href={`/comprobante/${g.ventaId}?formato=ticket`} target="_blank" rel="noopener" className="block text-[12px] font-semibold text-petroleo-3 hover:underline">Ver comprobante</a> : null}</td>
+                  <td className={`num ${g.monto < 0 ? "text-rojo" : ""}`}>{g.monto < 0 ? `− ${soles(-g.monto)}` : soles(g.monto)}</td>
+                  <td className="text-[13px]">{[g.operacion ? `Op. ${g.operacion}` : null, g.comentario].filter(Boolean).join(" · ") || "—"}</td>
+                </tr>
               ))}</tbody></table></div>
           </section>
         ) : null}
@@ -208,20 +265,34 @@ export default function ReporteCierre({ params }: { params: Promise<{ id: string
           </section>
         ) : null}
         <section className="mt-8 grid md:grid-cols-2 gap-6 text-[14px]">
-          <div><p className="text-ink-2 font-semibold text-[12.5px]">Observación</p><p className="mt-1">{s.observacion ?? "—"}</p>{s.observacionApertura ? <p className="text-ink-2 mt-1">Apertura: {s.observacionApertura}</p> : null}</div>
-          <div><p className="text-ink-2 font-semibold text-[12.5px]">Validado por</p><p className="mt-1">{s.validadoPor ?? "No requirió validación"}</p></div>
+          <div><p className="text-ink-2 font-semibold text-[12.5px]">Observación del cajero</p><p className="mt-1">{s.observacion ?? "—"}</p>{s.observacionApertura ? <p className="text-ink-2 mt-1">Apertura: {s.observacionApertura}</p> : null}</div>
+          <div><p className="text-ink-2 font-semibold text-[12.5px]">Aprobado por</p>
+            {s.validadoPor ? <><p className="mt-1">{s.validadoPor}{s.validadoEn ? <span className="text-ink-2"> · {fechaHora(s.validadoEn)}</span> : null}</p>{s.observacionValidacion ? <p className="mt-1 text-ink-2">{s.observacionValidacion}</p> : null}</>
+              : <p className="mt-1">{s.estado === "EN_CIERRE" ? "Pendiente de aprobación" : "No requirió aprobación"}</p>}</div>
         </section>
         <div className="hidden print:flex gap-16 mt-16 text-sm text-ink-2"><div className="border-t border-ink-3 pt-2 w-56 text-center">Firma del cajero</div><div className="border-t border-ink-3 pt-2 w-56 text-center">Firma del administrador</div></div>
         {s.estado === "EN_CIERRE" && u.roles.includes("ADMIN") ? (
           <div className="no-imprimir mt-8 rounded-2xl bg-ambar-claro p-5">
-            <p className="font-semibold text-[#8a5b00]">Este cierre espera tu validación</p>
-            <div className="flex gap-2 mt-3">
-              <Entrada placeholder="Observación de la diferencia" value={obs} onChange={(e) => setObs(e.target.value)} />
-              <Boton disabled={obs.trim().length < 5} onClick={async () => { try { await api("/api/caja/validar", { cuerpo: { sesionId: s.id, observacion: obs } }); avisar("ok", "Cierre validado."); recargar(); } catch (e) { avisar("error", (e as Error).message); } }}>Validar</Boton>
+            <p className="font-semibold text-[#8a5b00]">Aprueba este cierre para terminar de cerrar la caja</p>
+            <p className="text-[13px] text-ink-2 mt-1">
+              Detalla qué pasó con la diferencia y qué se hizo (por ejemplo, si se descontó al cajero o se encontró el error).
+              {datos.virtuales.some((v) => !v.confirmado) ? ` Aún hay ${datos.virtuales.filter((v) => !v.confirmado).length} pagos sin regularizar: si apruebas así, quedan como faltante.` : ""}
+            </p>
+            <textarea value={obs} onChange={(e) => setObs(e.target.value)} rows={3} maxLength={500} placeholder="Ej.: faltante de S/ 6 por vuelto mal dado; se conversó con el cajero y se descontará en su pago"
+              className="mt-3 w-full rounded-xl border border-foil-3 bg-papel px-3 py-2 text-[14px] outline-none focus:border-petroleo" aria-label="Observación de la aprobación" />
+            <div className="flex flex-wrap items-center justify-between gap-2 mt-2">
+              <span className="text-[12.5px] text-ink-2">{obs.trim().length < 10 ? `Escribe al menos 10 caracteres (${obs.trim().length}/10)` : "Listo para aprobar"}</span>
+              <Boton cargando={aprobando} disabled={obs.trim().length < 10} onClick={async () => {
+                setAprobando(true);
+                try { await api("/api/caja/validar", { cuerpo: { sesionId: s.id, observacion: obs } }); avisar("ok", "Cierre aprobado: la caja quedó cerrada."); setObs(""); recargar(); }
+                catch (e) { avisar("error", (e as Error).message); } finally { setAprobando(false); }
+              }}>Aprobar cierre</Boton>
             </div>
           </div>
         ) : null}
       </Tarjeta>
+      <Regularizar sesionId={s.id} item={regularizar} vendedores={datos.vendedores ?? []} cajeroId={s.usuarioId} alCerrar={() => setRegularizar(null)}
+        alTerminar={(m) => { setRegularizar(null); avisar("ok", m); recargar(); }} />
     </div>
   );
 }

@@ -13,9 +13,10 @@ export default function (d) {
   const t = d.tokens[__VU - 1];
   const e = get(t, "/api/caja", "caja_estado").json();
   if (!e.sesion) return;
-  const r = post(t, "/api/caja/cerrar", { efectivo: 0, confirmados: [], observacion: "Cierre de prueba de carga" }, "cerrar");
+  // Los pagos virtuales están conformes (no se marca ninguno); el efectivo en 0 fuerza un cierre por aprobar.
+  const r = post(t, "/api/caja/cerrar", { efectivo: 0, noCuadran: {}, observacion: "Cierre de prueba de carga" }, "cerrar");
   check(r, { "cierre 200": (x) => x.status === 200 });
-  if (r.json("estado") === "EN_CIERRE") post(d.admin, "/api/caja/validar", { sesionId: r.json("sesionId"), observacion: "Validado en prueba de carga" }, "validar");
+  if (r.json("estado") === "EN_CIERRE") post(d.admin, "/api/caja/validar", { sesionId: r.json("sesionId"), observacion: "Aprobado en prueba de carga" }, "validar");
   const rep = get(d.admin, `/api/caja/sesiones/${r.json("sesionId")}`, "reporte_cierre").json();
   const esperado = rep.arqueo.reduce((s, a) => s + a.esperado, 0);
   const ingresos = rep.movimientos.reduce((s, m) => s + (m.tipo === "INGRESO" ? m.monto : -m.monto), 0);

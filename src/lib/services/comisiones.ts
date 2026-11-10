@@ -1,7 +1,10 @@
 import { and, asc, eq, inArray, isNull, lte, ne, sql } from "drizzle-orm";
 import { schema, type Db } from "@/db";
 import type { Sesion } from "../auth";
-import { ErrorNegocio, hoy as hoyLima, mesDe, r2 } from "../util";
+import { z } from "zod";
+import { tieneRol } from "../permisos";
+import { filas } from "../sqlrows";
+import { diasEntre, ErrorNegocio, esFechaValida, hoy as hoyLima, mesDe, r2, sumarDias } from "../util";
 
 const { comision, comisionDiaria, liquidacionMensual, usuario, venta, ventaDetalle, producto, presentacion, lote, auditoria } = schema;
 
@@ -132,4 +135,85 @@ export async function pagarLiquidacion(db: Db, user: Sesion, id: number) {
     await tx.insert(auditoria).values({ usuarioId: user.id, accion: "PAGAR_COMISION", entidad: "liquidacion_mensual", entidadId: id, detalle: { total: l.total } });
   });
   return { id, estado: "PAGADA" };
+}
+
+const MESES_CORTO = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+const MESES_LARGO = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+const DIAS_SEMANA = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
+const fechaValida = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(esFechaValida, "fecha no válida");
+const vacio = (v: unknown) => (v === "" ? undefined : v);
+
+export const esquemaHistoricoComisiones = z.object({
+  periodo: z.enum(["dia", "semana", "mes", "anio", "rango"]).default("anio"),
+  fecha: z.preprocess(vacio, fechaValida.optional()), // día de referencia para día, semana y mes
+  anio: z.preprocess(vacio, z.coerce.number().int().min(2000).max(2100).optional()),
+  desde: z.preprocess(vacio, fechaValida.optional()),
+  hasta: z.preprocess(vacio, fechaValida.optional()),
+  turno: z.preprocess(vacio, z.enum(["MAÑANA", "TARDE", "NOCHE", "COMPLETO"]).optional()),
+  usuarioId: z.preprocess(vacio, z.coerce.number().int().optional()),
+});
+
+const diaSemana = (f: string) => new Date(`${f}T12:00:00Z`).getUTCDay();
+const fechaLarga = (f: string) => `${DIAS_SEMANA[diaSemana(f)]} ${Number(f.slice(8, 10))} de ${MESES_LARGO[Number(f.slice(5, 7)) - 1]} de ${f.slice(0, 4)}`;
+
+/**
+ * Comisiones en barras para quien vende: por mes de un año, por día de un mes, una semana o un rango, o por hora de un día;
+ * se puede filtrar por turno. El administrador y el contador pueden ver a un vendedor o a todos.
+ */
+export async function historicoComisiones(db: Db, user: Sesion, q: z.infer<typeof esquemaHistoricoComisiones>) {
+  const hoy = hoyLima();
+  const ref = q.fecha ?? hoy;
+  let desde: string, hasta: string; // hasta es exclusivo
+  if (q.periodo === "dia") { desde = ref; hasta = sumarDias(ref, 1); }
+  else if (q.periodo === "semana") { desde = sumarDias(ref, -((diaSemana(ref) + 6) % 7)); hasta = sumarDias(desde, 7); } // de lunes a domingo
+  else if (q.periodo === "mes") { desde = `${ref.slice(0, 7)}-01`; const m = Number(ref.slice(5, 7)); hasta = m === 12 ? `${Number(ref.slice(0, 4)) + 1}-01-01` : `${ref.slice(0, 4)}-${String(m + 1).padStart(2, "0")}-01`; }
+  else if (q.periodo === "anio") { const a = q.anio ?? Number(hoy.slice(0, 4)); desde = `${a}-01-01`; hasta = `${a + 1}-01-01`; }
+  else {
+    if (!q.desde || !q.hasta) throw new ErrorNegocio("FILTRO", "Elige la fecha de inicio y de fin del rango.");
+    if (q.hasta < q.desde) throw new ErrorNegocio("FILTRO", "La fecha final no puede ser anterior a la inicial.");
+    if (diasEntre(q.desde, q.hasta) > 366 * 3) throw new ErrorNegocio("FILTRO", "El rango puede ser de hasta 3 años.");
+    desde = q.desde; hasta = sumarDias(q.hasta, 1);
+  }
+  const nivel: "hora" | "dia" | "mes" = q.periodo === "dia" ? "hora" : q.periodo === "anio" || (q.periodo === "rango" && diasEntre(desde, hasta) > 62) ? "mes" : "dia";
+
+  const gestiona = tieneRol(user.roles, "ADMIN", "CONTADOR");
+  const usuarioId = gestiona ? q.usuarioId ?? null : user.id;
+  const grupo = nivel === "hora" ? sql`to_char(v.fecha at time zone 'America/Lima', 'HH24')` : nivel === "dia" ? sql`c.fecha::text` : sql`to_char(c.fecha, 'YYYY-MM')`;
+  const rows = await filas<{ grupo: string; total: string; lineas: string; ventas: string }>(db, sql`
+    select ${grupo} as grupo, sum(c.monto) as total, count(*) as lineas, count(distinct c.venta_id) as ventas
+    from comision c join venta v on v.id = c.venta_id left join sesion_caja s on s.id = v.sesion_id
+    where c.estado <> 'REVERTIDA' and c.fecha >= ${desde} and c.fecha < ${hasta}
+      ${usuarioId ? sql`and c.usuario_id = ${usuarioId}` : sql``} ${q.turno ? sql`and s.turno = ${q.turno}` : sql``}
+    group by 1`);
+  const mapa = new Map(rows.map((r) => [r.grupo, r]));
+
+  let claves: string[];
+  if (nivel === "mes") {
+    claves = [];
+    for (let m = desde.slice(0, 7); m < hasta.slice(0, 7) || (m === hasta.slice(0, 7) && hasta.slice(8) !== "01"); ) {
+      claves.push(m);
+      const [a, mm] = m.split("-").map(Number);
+      m = mm === 12 ? `${a + 1}-01` : `${a}-${String(mm + 1).padStart(2, "0")}`;
+    }
+  } else if (nivel === "dia") claves = Array.from({ length: diasEntre(desde, hasta) }, (_, i) => sumarDias(desde, i));
+  else {
+    const horas = rows.map((r) => Number(r.grupo));
+    claves = horas.length ? Array.from({ length: Math.max(...horas) - Math.min(...horas) + 1 }, (_, i) => String(Math.min(...horas) + i).padStart(2, "0")) : [];
+  }
+  const variosAnios = claves.length && nivel === "mes" && claves[0].slice(0, 4) !== claves[claves.length - 1].slice(0, 4);
+  const barras = claves.map((clave) => {
+    const r = mapa.get(clave);
+    const etiqueta = nivel === "mes" ? `${MESES_CORTO[Number(clave.slice(5, 7)) - 1]}${variosAnios ? ` ${clave.slice(2, 4)}` : ""}`
+      : nivel === "dia" ? (q.periodo === "semana" ? `${DIAS_SEMANA[diaSemana(clave)]} ${Number(clave.slice(8))}` : String(Number(clave.slice(8))))
+      : `${clave}h`;
+    const detalle = nivel === "mes" ? `${MESES_LARGO[Number(clave.slice(5, 7)) - 1]} de ${clave.slice(0, 4)}` : nivel === "dia" ? fechaLarga(clave) : `${clave}:00 a ${clave}:59`;
+    return { clave, etiqueta, detalle: detalle[0].toUpperCase() + detalle.slice(1), total: r2(Number(r?.total ?? 0)), lineas: Number(r?.lineas ?? 0), ventas: Number(r?.ventas ?? 0) };
+  });
+  const vendedores = gestiona ? await db.select({ id: usuario.id, nombre: usuario.nombre }).from(usuario)
+    .where(sql`exists (select 1 from comision c where c.usuario_id = ${usuario.id})`).orderBy(usuario.nombre) : [];
+  return {
+    periodo: q.periodo, nivel, desde, hasta: sumarDias(hasta, -1), usuarioId, propias: !gestiona, vendedores,
+    total: r2(barras.reduce((a, b) => a + b.total, 0)), lineas: barras.reduce((a, b) => a + b.lineas, 0), ventas: rows.reduce((a, r) => a + Number(r.ventas), 0),
+    barras,
+  };
 }
