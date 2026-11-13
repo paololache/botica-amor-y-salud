@@ -72,7 +72,7 @@ function avance(mes: string, meta: number | null, vendido: number): AvanceMes {
 async function vendidoDelMes(db: Db, mes: string) {
   const { inicio, fin } = rangoMes(mes);
   const rows = await filas<{ usuario_id: number; mostrador: string | null; total: string | null }>(db, sql`
-    select usuario_id, sum(total) filter (where canal = 'MOSTRADOR') as mostrador, sum(total) as total
+    select usuario_id, sum(total) filter (where canal = 'MOSTRADOR') as mostrador, sum(total - delivery) as total
     from venta where estado = 'EMITIDA' and fecha >= ${inicio.toISOString()} and fecha < ${fin.toISOString()} group by usuario_id`);
   return {
     botica: r2(rows.reduce((a, r) => a + Number(r.total ?? 0), 0)),

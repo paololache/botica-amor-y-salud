@@ -205,7 +205,7 @@ function Aprobar({ t, usuarios, alDecidir }: { t: Transf; usuarios: Usuario[]; a
     try {
       let factura: string | null = null;
       if (aprobar) factura = (await api<{ factura: string | null }>(`/api/transferencias/${t.id}/aprobar`, { cuerpo: esVenta
-        ? { precios: t.items.map((i) => ({ detalleId: i.id, precioUnitario: Number(precios[i.id]) })), vendedorId: Number(vendedorId), medioPago: medio, costoAdicional: adicional ? Number(adicional) : undefined, comentario: comentario || undefined, motivoBajoCosto: bajoCosto.length ? motivoBajoCosto : undefined }
+        ? { precios: t.items.map((i) => ({ detalleId: i.id, precioUnitario: Number(precios[i.id]) })), vendedorId: Number(vendedorId), medioPago: medio, delivery: adicional ? Number(adicional) : undefined, comentario: comentario || undefined, motivoBajoCosto: bajoCosto.length ? motivoBajoCosto : undefined }
         : { costoAdicional: adicional ? Number(adicional) : undefined, comentario: comentario || undefined } })).factura;
       else await api(`/api/transferencias/${t.id}/rechazar`, { cuerpo: { comentario } });
       avisar("ok", !aprobar ? `${t.referencia} rechazada: el stock no se movió.` : factura ? `${t.referencia} aprobada: se emitió ${t.destinoTipoDoc === "DNI" ? "la boleta" : "la factura"} ${factura} y el stock ya se descontó.` : `${t.referencia} aprobada: traslado registrado y stock descontado.`);
@@ -263,7 +263,7 @@ function Aprobar({ t, usuarios, alDecidir }: { t: Transf; usuarios: Usuario[]; a
         </div>
       ) : <p className="text-[13px] text-ink-2 mt-3">Traslado a sucursal propia: no se factura ni cuenta como venta; la mercadería sale a su costo.</p>}
       <div className="grid md:grid-cols-[200px_minmax(0,1fr)] gap-3 mt-4">
-        <Campo etiqueta="Costo adicional (opcional)" ayuda="Ej.: envío"><EntradaNumero inputMode="decimal" value={adicional} onChange={(e) => setAdicional(e.target.value)} placeholder="0.00" /></Campo>
+        <Campo etiqueta={esVenta ? "Delivery (lo paga el cliente)" : "Costo adicional (opcional)"} ayuda={esVenta ? `Se cobra en la ${t.destinoTipoDoc === "DNI" ? "boleta" : "factura"} como «Servicio de delivery»` : "Ej.: envío; lo asume la botica"}><EntradaNumero inputMode="decimal" value={adicional} onChange={(e) => setAdicional(e.target.value)} placeholder="0.00" /></Campo>
         <Campo etiqueta="Comentario" ayuda="Obligatorio para rechazar"><Entrada value={comentario} maxLength={250} onChange={(e) => setComentario(e.target.value)} /></Campo>
       </div>
       {bajoCosto.length ? (
@@ -278,7 +278,7 @@ function Aprobar({ t, usuarios, alDecidir }: { t: Transf; usuarios: Usuario[]; a
       ) : null}
       {error ? <p className="text-sm text-rojo mt-3">{error}</p> : null}
       <div className="flex flex-wrap items-center justify-between gap-3 mt-4">
-        <span className="text-[13.5px]">{esVenta ? <>Total de la {t.destinoTipoDoc === "DNI" ? "boleta" : "factura"}: <b>{soles(total)}</b> · costo {soles(t.items.reduce((s, i) => s + (i.costoActual ?? 0) * i.unidades, 0))}</> : <>Sin venta · costo {soles(t.items.reduce((s, i) => s + (i.costoActual ?? 0) * i.unidades, 0))}</>}{Number(adicional) > 0 ? <span className="text-ink-2"> · costo adicional {soles(Number(adicional))}</span> : null}</span>
+        <span className="text-[13.5px]">{esVenta ? <>Total de la {t.destinoTipoDoc === "DNI" ? "boleta" : "factura"}: <b>{soles(total + (Number(adicional) || 0))}</b>{Number(adicional) > 0 ? <span className="text-ink-2"> (productos {soles(total)} + delivery {soles(Number(adicional))})</span> : null} · costo {soles(t.items.reduce((s, i) => s + (i.costoActual ?? 0) * i.unidades, 0))}</> : <>Sin venta · costo {soles(t.items.reduce((s, i) => s + (i.costoActual ?? 0) * i.unidades, 0))}</>}{!esVenta && Number(adicional) > 0 ? <span className="text-ink-2"> · costo adicional {soles(Number(adicional))}</span> : null}</span>
         <div className="flex gap-2">
           <Boton variante="borde" cargando={ocupado} disabled={comentario.trim().length < 5} onClick={() => decidir(false)}>Rechazar</Boton>
           <Boton variante={bajoCosto.length ? "peligro" : "amor"} cargando={ocupado} disabled={!completo || !!sinStock.length || !!sinLote.length || (bajoCosto.length > 0 && motivoBajoCosto.trim().length < 5)} onClick={() => decidir(true)}>
@@ -316,7 +316,7 @@ function Historial() {
               <ul className="mt-2 space-y-1 text-[13px]">{t.items.map((i) => (
                 <li key={i.id}><b>{i.producto}</b> · {i.lote ? `lote ${i.lote}${i.vencimiento ? ` (vence ${vence(i.vencimiento)})` : ""}` : "sin lote"}{i.registroSanitario ? ` · R.S. ${i.registroSanitario}` : ""} · {numero(i.unidades)} und.{verPrecios && i.precioUnitario != null ? ` · ${soles(i.precioUnitario)} c/u` : ""}{verPrecios && i.costoUnitario != null ? ` · costo ${soles(i.costoUnitario)} c/u` : ""}</li>
               ))}</ul>
-              {verPrecios && t.estado === "APROBADA" ? <p className="text-[13px] mt-2">Total {soles(t.totalVenta)} · costo de la mercadería {soles(t.costoTotal)}{Number(t.costoAdicional) > 0 ? ` · costo adicional ${soles(t.costoAdicional)}` : ""}</p> : null}
+              {verPrecios && t.estado === "APROBADA" ? <p className="text-[13px] mt-2">Total {soles(t.totalVenta)} · costo de la mercadería {soles(t.costoTotal)}{Number(t.costoAdicional) > 0 ? (t.tipoDestino === "EMPRESA" ? ` · incluye delivery cobrado al cliente ${soles(t.costoAdicional)}` : ` · costo adicional ${soles(t.costoAdicional)}`) : ""}</p> : null}
             </td></tr>
           ) : null,
         ])}</tbody>

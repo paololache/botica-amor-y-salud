@@ -774,8 +774,8 @@ describe("Transferencias a otra botica", () => {
     expect(t.items[0].enCampana).toBe(true);
     const antes = await stockVit();
     const comisiones = (await db.select().from(schema.comision)).length;
-    const r = await aprobarTransferencia(db, F.admin, t.id, { vendedorId: F.caja2.id, medioPago: "TRANSFERENCIA", precios: [{ detalleId: t.items[0].id, precioUnitario: 15 }], costoAdicional: 5 });
-    expect(r.totalVenta).toBe(45);
+    const r = await aprobarTransferencia(db, F.admin, t.id, { vendedorId: F.caja2.id, medioPago: "TRANSFERENCIA", precios: [{ detalleId: t.items[0].id, precioUnitario: 15 }], delivery: 5 });
+    expect(r.totalVenta).toBe(50);
     expect(await stockVit()).toBe(antes - 3);
     expect((await db.select().from(schema.comision)).length).toBe(comisiones);
     const k = await db.select().from(schema.kardex).where(and(eq(schema.kardex.tipo, "TRANSFERENCIA"), eq(schema.kardex.documentoId, r.ventaId!)));
@@ -785,7 +785,7 @@ describe("Transferencias a otra botica", () => {
     const camp = await db.select().from(schema.campana).where(eq(schema.campana.productoId, F.vit.id));
     expect(camp.some((c) => c.estado === "ACTIVA")).toBe(true);
     const [vista] = await listarTransferencias(db, F.admin, "APROBADA");
-    expect(vista).toMatchObject({ totalVenta: 45, costoAdicional: 5 });
+    expect(vista).toMatchObject({ totalVenta: 50, costoAdicional: 5 });
     await expect(aprobarTransferencia(db, F.admin, t.id, { vendedorId: F.caja2.id, medioPago: "TRANSFERENCIA", precios: [{ detalleId: t.items[0].id, precioUnitario: 15 }] })).rejects.toThrow(/ya fue/);
   });
   it("valida stock, precios, rechazo con comentario y avisa en el panel", async () => {
@@ -1136,7 +1136,7 @@ describe("Cuota de venta del mes", () => {
   const mes = hoy().slice(0, 7);
   it("guarda la cuota de la botica y de cada vendedor y calcula el avance", async () => {
     const r = await guardarMetasMes(db, F.admin, { mes, botica: 1000, vendedores: [{ usuarioId: F.caja1.id, metaMes: 500, metaDiaria: 80 }, { usuarioId: F.caja2.id, metaMes: null }] });
-    const [{ total }] = await filas<{ total: number }>(db, sql`select coalesce(sum(total),0)::float as total from venta where estado = 'EMITIDA' and to_char(fecha at time zone 'America/Lima', 'YYYY-MM') = ${mes}`);
+    const [{ total }] = await filas<{ total: number }>(db, sql`select coalesce(sum(total - delivery),0)::float as total from venta where estado = 'EMITIDA' and to_char(fecha at time zone 'America/Lima', 'YYYY-MM') = ${mes}`);
     expect(r.botica.meta).toBe(1000);
     expect(r.botica.vendido).toBeCloseTo(Number(total), 2);
     expect(r.botica.faltante).toBe(Math.max(0, Math.round((1000 - Number(total)) * 100) / 100));
@@ -1462,5 +1462,29 @@ describe("Transferencia asociada al lote y al registro sanitario", () => {
     expect(k.every((x) => x.loteId === lt.id)).toBe(true);
     const comp = await detalleVenta(db, ap.ventaId!, F.caja1);
     expect(comp.items).toEqual([expect.objectContaining({ lote: lt.numero, vencimiento: lt.vencimiento, registroSanitario: "EN-01234", cantidad: 2 })]);
+  });
+});
+
+describe("Delivery que paga el cliente en una transferencia", () => {
+  it("se cobra en el comprobante, no cuenta como venta de productos y no cambia la ganancia", async () => {
+    const lt = await loteVigente(F.vit.id, 2);
+    const r = await registrarTransferencia(db, F.caja1, { tipoDestino: "EMPRESA", destinoTipoDoc: "RUC", destinoDoc: "20555555551", destino: "Farmacia Vecina SAC", motivo: "Venta con envío", items: [{ productoId: F.vit.id, loteId: lt.id, unidades: 2 }] });
+    const [t] = (await listarTransferencias(db, F.admin, "PENDIENTE")).filter((x) => x.id === r.id);
+    const ventasAntes = (await panel(db, F.admin)).ventas.dia.total;
+    const ap = await aprobarTransferencia(db, F.admin, r.id, { vendedorId: F.caja2.id, medioPago: "YAPE", delivery: 11.8, precios: [{ detalleId: t.items[0].id, precioUnitario: 20 }] });
+    expect(ap).toMatchObject({ totalVenta: 51.8, delivery: 11.8 });
+    const [v] = await db.select().from(schema.venta).where(eq(schema.venta.id, ap.ventaId!));
+    expect(v).toMatchObject({ total: 51.8, delivery: 11.8, subtotal: 43.9, igv: 7.9 });
+    const pagos = await db.select().from(schema.ventaPago).where(eq(schema.ventaPago.ventaId, v.id));
+    expect(pagos).toEqual([expect.objectContaining({ medio: "YAPE", monto: 51.8 })]);
+    // La ganancia es la de los productos: 40 / 1.18 − costo de la mercadería.
+    expect(v.total / 1.18 - v.costoTotal).toBeCloseTo(40 / 1.18 - lt.costoUnitario * 2, 1);
+    // En el panel solo suman los productos.
+    expect((await panel(db, F.admin)).ventas.dia.total).toBeCloseTo(ventasAntes + 40, 2);
+    const comp = await detalleVenta(db, v.id, F.caja1);
+    expect(comp.venta.delivery).toBe(11.8);
+    expect(comp.items.reduce((s, i) => s + Number(i.subtotal), 0)).toBeCloseTo(40, 2);
+    const [vista] = (await listarTransferencias(db, F.admin, "APROBADA")).filter((x) => x.id === r.id);
+    expect(vista).toMatchObject({ totalVenta: 51.8, costoAdicional: 11.8 });
   });
 });

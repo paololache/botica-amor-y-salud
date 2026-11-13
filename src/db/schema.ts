@@ -146,6 +146,8 @@ export const venta = pgTable("venta", {
   igv: money("igv").notNull(),
   descuento: money("descuento").notNull().default(0),
   total: money("total").notNull(),
+  // Delivery que paga el cliente, incluido en el total como «Servicio de delivery»: no es venta de productos.
+  delivery: money("delivery").notNull().default(0),
   costoTotal: money("costo_total").notNull().default(0),
   receta: jsonb("receta").$type<{ medico: string; cmp: string; numero: string } | null>(),
   estado: text("estado").notNull().default("EMITIDA"), // EMITIDA | ANULADA

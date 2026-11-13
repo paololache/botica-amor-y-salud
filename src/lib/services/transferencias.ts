@@ -31,7 +31,10 @@ export const esquemaAprobacion = z.object({
   precios: z.array(z.object({ detalleId: id, precioUnitario: monto })).default([]),
   vendedorId: id.optional(),
   medioPago: z.enum(MEDIOS).optional(),
+  /** Traslado a sucursal: gasto de envío que asume la botica. */
   costoAdicional: montoOCero.optional(),
+  /** Venta: delivery que paga el cliente; se cobra en el comprobante como «Servicio de delivery». */
+  delivery: montoOCero.optional(),
   comentario: z.string().trim().max(250).optional(),
   /** Vender por debajo del precio mínimo (costo + IGV), p. ej. para recuperar la inversión. Solo el administrador, con motivo. */
   motivoBajoCosto: z.string().trim().max(250).optional(),
@@ -185,7 +188,9 @@ export async function aprobarTransferencia(db: Db, user: Sesion, transferenciaId
     if (esVenta) for (const { d, nombre } of det) if (!precios.has(d.id)) throw new ErrorNegocio("FALTA_PRECIO", `Falta el precio de venta de ${nombre}.`);
     await bloquearProductos(tx, det.map((x) => x.d.productoId));
     // La venta se crea primero para que el kardex y el detalle apunten a la factura.
-    const totalVenta = esVenta ? r2(det.reduce((s, x) => s + precios.get(x.d.id)! * x.d.unidades, 0)) : null;
+    const totalProductos = esVenta ? r2(det.reduce((s, x) => s + precios.get(x.d.id)! * x.d.unidades, 0)) : null;
+    const delivery = esVenta ? r2(input.delivery ?? 0) : 0;
+    const totalVenta = totalProductos !== null ? r2(totalProductos + delivery) : null;
     let ventaId: number | null = null;
     let docRef = referencia(t);
     if (esVenta) {
@@ -194,7 +199,7 @@ export async function aprobarTransferencia(db: Db, user: Sesion, transferenciaId
       const [c] = await tx.insert(cliente).values({ tipoDoc: t.destinoTipoDoc ?? "RUC", numero: t.destinoDoc!, nombre: t.destino }).onConflictDoUpdate({ target: cliente.numero, set: { nombre: t.destino } }).returning({ id: cliente.id });
       const numero = await siguienteNumero(tx, SERIES[tipoComprobante]);
       const subtotal = r2(totalVenta! / 1.18);
-      const [v] = await tx.insert(venta).values({ sesionId: null, usuarioId: input.vendedorId!, canal: "TRANSFERENCIA", clienteId: c.id, tipoComprobante, serie: SERIES[tipoComprobante], numero, subtotal, igv: r2(totalVenta! - subtotal), total: totalVenta!, cpeEstado: estadoInicialCpe() }).returning();
+      const [v] = await tx.insert(venta).values({ sesionId: null, usuarioId: input.vendedorId!, canal: "TRANSFERENCIA", clienteId: c.id, tipoComprobante, serie: SERIES[tipoComprobante], numero, subtotal, igv: r2(totalVenta! - subtotal), total: totalVenta!, delivery, cpeEstado: estadoInicialCpe() }).returning();
       await tx.insert(ventaPago).values({ ventaId: v.id, medio: input.medioPago!, monto: totalVenta! });
       ventaId = v.id; docRef = `${v.serie}-${String(v.numero).padStart(6, "0")}`;
     }
@@ -232,16 +237,17 @@ export async function aprobarTransferencia(db: Db, user: Sesion, transferenciaId
       if (!tieneRol(user.roles, "ADMIN")) throw new ErrorNegocio("BAJO_COSTO", `Solo el administrador puede vender por debajo del costo: ${lista}.`, 403);
       if (!motivoBajoCosto || motivoBajoCosto.length < 5) throw new ErrorNegocio("BAJO_COSTO", `El precio queda por debajo del costo en: ${lista}. Si lo vendes así a propósito, escribe el motivo.`, 422);
     }
-    if (ventaId) await tx.update(venta).set({ costoTotal: r2(costoTotal) }).where(eq(venta.id, ventaId));
+    // El delivery se cobra y se paga al repartidor tal cual: entra al costo (sin IGV) para que no cambie la ganancia de la venta.
+    if (ventaId) await tx.update(venta).set({ costoTotal: r2(costoTotal + delivery / 1.18) }).where(eq(venta.id, ventaId));
     // Otro administrador pudo aprobarla al mismo tiempo: solo una de las dos aprobaciones aplica.
     const hecho = await tx.update(transferencia).set({
       estado: "APROBADA", decididoPor: user.id, decididoEn: new Date(),
-      comentario: bajoCosto.length ? [input.comentario, `Venta bajo costo: ${motivoBajoCosto}`].filter(Boolean).join(" · ").slice(0, 500) : input.comentario || null, costoAdicional: input.costoAdicional ?? 0,
+      comentario: bajoCosto.length ? [input.comentario, `Venta bajo costo: ${motivoBajoCosto}`].filter(Boolean).join(" · ").slice(0, 500) : input.comentario || null, costoAdicional: esVenta ? delivery : input.costoAdicional ?? 0,
       totalVenta, costoTotal: r2(costoTotal), vendedorId: esVenta ? input.vendedorId! : null, medioPago: esVenta ? input.medioPago! : null, ventaId,
     }).where(and(eq(transferencia.id, t.id), eq(transferencia.estado, "PENDIENTE"))).returning({ id: transferencia.id });
     if (!hecho.length) throw new ErrorNegocio("ESTADO", "Esta transferencia ya fue aprobada o rechazada.");
-    await tx.insert(auditoria).values({ usuarioId: user.id, accion: "APROBAR_TRANSFERENCIA", entidad: "transferencia", entidadId: t.id, detalle: { referencia: referencia(t), tipo: t.tipoDestino, factura: esVenta ? docRef : null, vendedorId: input.vendedorId ?? null, totalVenta, costoAdicional: input.costoAdicional ?? 0, ...(bajoCosto.length ? { bajoCosto, motivoBajoCosto } : {}) } });
-    return { id: t.id, referencia: referencia(t), estado: "APROBADA", ventaId, factura: esVenta ? docRef : null, comprobante: esVenta ? (t.destinoTipoDoc === "DNI" ? "BOLETA" : "FACTURA") : null, totalVenta, costoTotal: r2(costoTotal) };
+    await tx.insert(auditoria).values({ usuarioId: user.id, accion: "APROBAR_TRANSFERENCIA", entidad: "transferencia", entidadId: t.id, detalle: { referencia: referencia(t), tipo: t.tipoDestino, factura: esVenta ? docRef : null, vendedorId: input.vendedorId ?? null, totalVenta, delivery, costoAdicional: input.costoAdicional ?? 0, ...(bajoCosto.length ? { bajoCosto, motivoBajoCosto } : {}) } });
+    return { id: t.id, referencia: referencia(t), estado: "APROBADA", ventaId, factura: esVenta ? docRef : null, comprobante: esVenta ? (t.destinoTipoDoc === "DNI" ? "BOLETA" : "FACTURA") : null, totalVenta, delivery, costoTotal: r2(costoTotal) };
   });
 }
 

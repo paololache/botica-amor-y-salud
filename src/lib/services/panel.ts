@@ -38,7 +38,7 @@ export async function historicoVentas(db: Db, user: Sesion, q: z.infer<typeof es
   const propias = !tieneRol(user.roles, "ADMIN", "CONTADOR");
   const delUsuario = propias ? sql`and v.usuario_id = ${user.id}` : sql``;
   const rows = await filas<{ grupo: string; total: string; tickets: string }>(db, sql`
-    select to_char(v.fecha at time zone 'America/Lima', ${formato}) as grupo, sum(v.total) as total, count(*) as tickets
+    select to_char(v.fecha at time zone 'America/Lima', ${formato}) as grupo, sum(v.total - v.delivery) as total, count(*) as tickets
     from venta v left join sesion_caja s on s.id = v.sesion_id
     where v.estado = 'EMITIDA' and v.fecha >= ${inicioDiaLima(inicio).toISOString()} and v.fecha < ${inicioDiaLima(fin).toISOString()}
       ${q.turno ? sql`and s.turno = ${q.turno}` : sql``} ${delUsuario}
@@ -70,13 +70,14 @@ export async function panel(db: Db, user: Sesion) {
   const ventasDe = async (desde: string) => {
     const cond = [eq(venta.estado, "EMITIDA"), gte(venta.fecha, inicioDiaLima(desde))];
     if (propias) cond.push(eq(venta.usuarioId, user.id));
-    const [r] = await db.select({ total: sql<number>`coalesce(sum(${venta.total}),0)`.mapWith(Number), tickets: sql<number>`count(*)`.mapWith(Number) }).from(venta).where(and(...cond));
+    // El delivery que paga el cliente no es venta: se descuenta del total.
+    const [r] = await db.select({ total: sql<number>`coalesce(sum(${venta.total} - ${venta.delivery}),0)`.mapWith(Number), tickets: sql<number>`count(*)`.mapWith(Number) }).from(venta).where(and(...cond));
     return { total: r2(r?.total ?? 0), tickets: r?.tickets ?? 0 };
   };
   const ventasAyer = async () => {
     const cond = [eq(venta.estado, "EMITIDA"), gte(venta.fecha, inicioDiaLima(sumarDias(hoy, -1))), sql`${venta.fecha} < ${inicioDiaLima(hoy).toISOString()}`];
     if (propias) cond.push(eq(venta.usuarioId, user.id));
-    const [r] = await db.select({ total: sql<number>`coalesce(sum(${venta.total}),0)`.mapWith(Number) }).from(venta).where(and(...cond));
+    const [r] = await db.select({ total: sql<number>`coalesce(sum(${venta.total} - ${venta.delivery}),0)`.mapWith(Number) }).from(venta).where(and(...cond));
     return r2(r?.total ?? 0);
   };
   const [dia, mes, ayer, alertas, caja, comisiones, tarjetas, accesos, meta, cuota] = await Promise.all([

@@ -7,7 +7,7 @@ import { importeEnLetras } from "@/lib/letras";
 
 type Detalle = {
   venta: {
-    id: number; serie: string; numero: number; fecha: string; tipoComprobante: "BOLETA" | "FACTURA" | "NOTA_VENTA"; subtotal: number; igv: number; descuento: number; total: number;
+    id: number; serie: string; numero: number; fecha: string; tipoComprobante: "BOLETA" | "FACTURA" | "NOTA_VENTA"; subtotal: number; igv: number; descuento: number; total: number; delivery: number;
     estado: string; cpeEstado: string; receta: { medico: string; cmp: string; numero: string } | null;
   };
   items: { producto: string; presentacion: string; lote: string; vencimiento: string; registroSanitario: string | null; cantidad: number; precio: number; subtotal: number }[];
@@ -122,6 +122,9 @@ function Ticket({ d, lineas }: { d: Detalle; lineas: Lineas }) {
               <td className="pt-1.5 text-right tabular-nums">{m2(l.importe)}</td>
             </tr>
           ))}
+          {Number(v.delivery) > 0 ? (
+            <tr className="align-top"><td className="pt-1.5 pr-2">Servicio de delivery</td><td className="pt-1.5 text-right tabular-nums">{m2(v.delivery)}</td></tr>
+          ) : null}
         </tbody>
       </table>
       <div className={linea} />
@@ -194,6 +197,12 @@ function HojaA4({ d, lineas }: { d: Detalle; lineas: Lineas }) {
               <td className="py-2 text-right tabular-nums">{m2(l.importe)}</td>
             </tr>
           ))}
+          {Number(v.delivery) > 0 ? (
+            <tr className="border-b border-black/15 align-top">
+              <td className="py-2 pr-2 tabular-nums">1</td><td className="py-2 pr-2">Servicio de delivery</td><td className="py-2 pr-2" /><td className="py-2 pr-2" />
+              <td className="py-2 pr-2 text-right tabular-nums">{m2(v.delivery)}</td><td className="py-2 text-right tabular-nums">{m2(v.delivery)}</td>
+            </tr>
+          ) : null}
         </tbody>
       </table>
       <section className="mt-5 flex items-start justify-between gap-8">
