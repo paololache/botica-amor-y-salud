@@ -9,6 +9,7 @@ import { ICONOS, useUsuario } from "@/components/shell";
 import { BarraCuotaMes, BarraMeta } from "@/components/meta-dia";
 import type { AvanceMes, MetaDia } from "@/lib/services/metas";
 import { HistoricoVentas } from "@/components/historico-ventas";
+import { ProductosMasVendidos, VentasMensuales } from "@/components/reportes-panel";
 import { puede, tieneRol } from "@/lib/permisos";
 
 type Alerta = { id: number; tipo: string; severidad: string; titulo: string; detalle: string; referenciaTipo: string | null; referenciaId: number | null; creadaEn: string };
@@ -204,6 +205,14 @@ export default function PanelPrincipal() {
           ) : null}
         </div>
       </div>
+
+      {/* Reportes al pie: el administrador ve la botica completa; quien vende, lo suyo y su cuota. */}
+      {puede(u.roles, "ventas.ver") ? (
+        <section aria-label="Reportes de ventas" className="grid xl:grid-cols-2 gap-6 mt-6 [&>*]:min-w-0">
+          <VentasMensuales />
+          <ProductosMasVendidos />
+        </section>
+      ) : null}
 
       <Modal abierto={!!posponer} alCerrar={() => setPosponer(null)} titulo="Posponer alerta">
         <p className="text-sm text-ink-2 mb-4">{posponer?.titulo} volverá a aparecer en 24 horas.</p>

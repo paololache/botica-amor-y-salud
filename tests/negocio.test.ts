@@ -18,7 +18,7 @@ import bcrypt from "bcryptjs";
 import { enmascarar, MODULOS, moduloDeRuta, puede, tieneRol, verCostos, type Rol } from "@/lib/permisos";
 import { firmarSesion, leerSesion } from "@/lib/auth";
 import { crearUsuario, editarUsuario, eliminarUsuario, esquemaNuevoUsuario } from "@/lib/services/usuarios";
-import { esquemaHistorico, historicoVentas, panel } from "@/lib/services/panel";
+import { esquemaHistorico, esquemaMasVendidos, esquemaVentasAnuales, historicoVentas, masVendidosPanel, panel, ventasAnualesPanel } from "@/lib/services/panel";
 import { accesosFrecuentes, registrarUso } from "@/lib/services/accesos";
 import { filas } from "@/lib/sqlrows";
 import { avanceDelMes, cumplimientoCuotas, esquemaMetasMes, guardarMetasMes, metaDelDia, metasDelMes } from "@/lib/services/metas";
@@ -1486,5 +1486,37 @@ describe("Delivery que paga el cliente en una transferencia", () => {
     expect(comp.items.reduce((s, i) => s + Number(i.subtotal), 0)).toBeCloseTo(40, 2);
     const [vista] = (await listarTransferencias(db, F.admin, "APROBADA")).filter((x) => x.id === r.id);
     expect(vista).toMatchObject({ totalVenta: 51.8, costoAdicional: 11.8 });
+  });
+});
+
+describe("Reportes del panel principal", () => {
+  it("más vendidos: stock al inicio, vendido y saldo; el cajero solo cuenta sus ventas", async () => {
+    const anio = await masVendidosPanel(db, F.admin, esquemaMasVendidos.parse({ periodo: "anio" }));
+    expect(anio.productos.length).toBeGreaterThan(0);
+    for (let i = 1; i < anio.productos.length; i++) expect(anio.productos[i - 1].vendida).toBeGreaterThanOrEqual(anio.productos[i].vendida);
+    const vit = anio.productos.find((p) => p.id === F.vit.id)!;
+    const lotes = await db.select().from(schema.lote).where(eq(schema.lote.productoId, F.vit.id));
+    expect(vit.saldo).toBe(lotes.reduce((a, l) => a + l.cantidad, 0));
+    const [{ mov }] = await filas<{ mov: string }>(db, sql`select coalesce(sum(entrada - salida), 0) as mov from kardex where producto_id = ${F.vit.id} and fecha >= ${new Date(hoy().slice(0, 4) + "-01-01T05:00:00Z").toISOString()}`);
+    expect(vit.stockInicial).toBe(vit.saldo - Number(mov));
+    const [{ u }] = await filas<{ u: string }>(db, sql`select coalesce(sum(vd.unidades), 0) as u from venta_detalle vd join venta v on v.id = vd.venta_id where v.estado = 'EMITIDA' and vd.producto_id = ${F.vit.id} and v.usuario_id = ${F.caja1.id}`);
+    const delCajero = await masVendidosPanel(db, F.caja1, esquemaMasVendidos.parse({ periodo: "anio" }));
+    expect(delCajero.propias).toBe(true);
+    expect(delCajero.productos.find((p) => p.id === F.vit.id)?.vendida ?? 0).toBe(Number(u));
+    expect(esquemaMasVendidos.safeParse({ periodo: "siglo" }).success).toBe(false);
+  });
+  it("ventas mensuales: la botica completa para el administrador, por vendedor; el cajero ve lo suyo y su cuota", async () => {
+    const mes = Number(hoy().slice(5, 7));
+    const adm = await ventasAnualesPanel(db, F.admin, esquemaVentasAnuales.parse({}));
+    expect(adm).toMatchObject({ propias: false, mes });
+    expect(adm.meses).toHaveLength(12);
+    expect(adm.porVendedor.length).toBeGreaterThan(0);
+    // El reparto por vendedor suma lo vendido por la botica en el mes.
+    expect(adm.porVendedor.reduce((a, v) => a + v.total, 0)).toBeCloseTo(adm.seleccionado!.vendido, 2);
+    const caj = await ventasAnualesPanel(db, F.caja1, esquemaVentasAnuales.parse({ mes: String(mes) }));
+    expect(caj).toMatchObject({ propias: true, porVendedor: [] });
+    const [{ t }] = await filas<{ t: string }>(db, sql`select coalesce(sum(total), 0) as t from venta where estado = 'EMITIDA' and canal = 'MOSTRADOR' and usuario_id = ${F.caja1.id} and to_char(fecha at time zone 'America/Lima', 'YYYY-MM') = ${hoy().slice(0, 7)}`);
+    expect(caj.seleccionado!.vendido).toBeCloseTo(Number(t), 2);
+    expect(caj.seleccionado!.vendido).toBeLessThanOrEqual(adm.seleccionado!.vendido);
   });
 });

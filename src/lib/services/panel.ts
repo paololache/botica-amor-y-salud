@@ -6,7 +6,7 @@ import { tieneRol } from "../permisos";
 import { filas } from "../sqlrows";
 import { ErrorNegocio, esFechaValida, hoy as hoyLima, inicioDiaLima, r2, sumarDias } from "../util";
 import { accesosFrecuentes } from "./accesos";
-import { avanceDelMes, metaDelDia } from "./metas";
+import { avanceDelMes, cumplimientoCuotas, metaDelDia } from "./metas";
 import { alertasDelRol, evaluarAlertasSiToca } from "./alertas";
 import { estadoCaja } from "./caja";
 import { misComisiones } from "./comisiones";
@@ -91,4 +91,72 @@ export async function panel(db: Db, user: Sesion) {
     tieneRol(user.roles, "ADMIN", "CONTADOR") ? avanceDelMes(db, null) : tieneRol(user.roles, "CAJERO", "VENDEDOR", "QF") ? avanceDelMes(db, user.id) : Promise.resolve(null),
   ]);
   return { hoy, ventas: { dia, mes, ayer, propias }, alertas, caja: caja ? { sesion: caja.sesion, resumen: caja.resumen } : null, comisiones, tarjetas, accesos, meta, cuota: cuota ? { ...cuota, deBotica: tieneRol(user.roles, "ADMIN", "CONTADOR") } : null };
+}
+
+export const esquemaMasVendidos = z.object({ periodo: z.enum(["dia", "semana", "mes", "anio"]).default("mes") });
+
+/**
+ * Productos más vendidos del periodo, con el stock al inicio, lo vendido y el saldo actual.
+ * El administrador y el contador ven todas las ventas; quien vende, solo las suyas (el stock siempre es el de la botica).
+ * Stock al inicio = saldo actual − movimientos del kardex desde el inicio del periodo (compras, ventas, salidas…).
+ */
+export async function masVendidosPanel(db: Db, user: Sesion, q: z.infer<typeof esquemaMasVendidos>) {
+  const hoy = hoyLima();
+  const dow = new Date(`${hoy}T12:00:00Z`).getUTCDay();
+  const inicio = q.periodo === "dia" ? hoy : q.periodo === "semana" ? sumarDias(hoy, -((dow + 6) % 7)) : q.periodo === "mes" ? `${hoy.slice(0, 7)}-01` : `${hoy.slice(0, 4)}-01-01`;
+  const desde = inicioDiaLima(inicio).toISOString();
+  const propias = !tieneRol(user.roles, "ADMIN", "CONTADOR");
+  const rows = await filas<{ id: number; codigo: string; nombre: string; vendida: string; saldo: string; movido: string }>(db, sql`
+    with vend as (
+      select vd.producto_id, sum(vd.unidades) as vendida
+      from venta_detalle vd join venta v on v.id = vd.venta_id
+      where v.estado = 'EMITIDA' and v.fecha >= ${desde} ${propias ? sql`and v.usuario_id = ${user.id}` : sql``}
+      group by vd.producto_id order by 2 desc limit 10)
+    select p.id, p.codigo, p.nombre, vend.vendida,
+      (select coalesce(sum(l.cantidad), 0) from lote l where l.producto_id = p.id) as saldo,
+      (select coalesce(sum(k.entrada - k.salida), 0) from kardex k where k.producto_id = p.id and k.fecha >= ${desde}) as movido
+    from vend join producto p on p.id = vend.producto_id
+    order by vend.vendida desc, p.nombre`);
+  return {
+    periodo: q.periodo, desde: inicio, propias,
+    productos: rows.map((r) => ({ id: r.id, codigo: r.codigo, nombre: r.nombre, stockInicial: Number(r.saldo) - Number(r.movido), vendida: Number(r.vendida), saldo: Number(r.saldo) })),
+  };
+}
+
+export const esquemaVentasAnuales = z.object({
+  anio: z.coerce.number().int().min(2000).max(2100).optional(),
+  mes: z.preprocess(vacioComoFalta, z.coerce.number().int().min(1).max(12).optional()),
+});
+
+/**
+ * Ventas de cada mes del año con su cuota. El administrador y el contador ven la botica completa (todas las cajas y vendedores)
+ * y cómo se reparte entre vendedores el mes elegido; quien vende ve lo suyo y el avance de su cuota.
+ */
+export async function ventasAnualesPanel(db: Db, user: Sesion, q: z.infer<typeof esquemaVentasAnuales>) {
+  const hoy = hoyLima();
+  const anio = q.anio ?? Number(hoy.slice(0, 4));
+  const mesActual = anio === Number(hoy.slice(0, 4)) ? Number(hoy.slice(5, 7)) : anio < Number(hoy.slice(0, 4)) ? 12 : 1;
+  const mes = q.mes ?? mesActual;
+  const gestiona = tieneRol(user.roles, "ADMIN", "CONTADOR");
+  const c = await cumplimientoCuotas(db, user, { anio, usuarioId: gestiona ? null : user.id });
+  const meses = c.meses.map((m) => ({ mes: m.mes, vendido: m.vendido, meta: m.meta, porcentaje: m.porcentaje, estado: m.estado }));
+  const clave = `${anio}-${dos(mes)}`;
+  let porVendedor: { usuarioId: number; nombre: string; total: number }[] = [];
+  if (gestiona) {
+    const fin = mes === 12 ? `${anio + 1}-01-01` : `${anio}-${dos(mes + 1)}-01`;
+    const rows = await filas<{ usuario_id: number; nombre: string; total: string }>(db, sql`
+      select v.usuario_id, u.nombre, sum(v.total - v.delivery) as total
+      from venta v join usuario u on u.id = v.usuario_id
+      where v.estado = 'EMITIDA' and v.fecha >= ${inicioDiaLima(`${clave}-01`).toISOString()} and v.fecha < ${inicioDiaLima(fin).toISOString()}
+      group by v.usuario_id, u.nombre order by 3 desc`);
+    porVendedor = rows.map((r) => ({ usuarioId: Number(r.usuario_id), nombre: r.nombre, total: r2(Number(r.total)) }));
+  }
+  const anios = await filas<{ anio: string }>(db, sql`
+    select distinct to_char(fecha at time zone 'America/Lima', 'YYYY') as anio from venta where estado = 'EMITIDA' ${gestiona ? sql`` : sql`and usuario_id = ${user.id}`} order by 1 desc`);
+  return {
+    anio, mes, propias: !gestiona, meses, porVendedor,
+    seleccionado: meses.find((m) => m.mes === clave) ?? null,
+    total: r2(meses.reduce((a, m) => a + m.vendido, 0)),
+    anios: [...new Set([Number(hoy.slice(0, 4)), anio, ...anios.map((a) => Number(a.anio))])].sort((a, b) => b - a),
+  };
 }
