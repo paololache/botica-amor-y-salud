@@ -55,8 +55,8 @@ function Recibir({ alTerminar }: { alTerminar: () => void }) {
           <Campo etiqueta="Razón social"><Entrada value={cab.razonSocial} onChange={(e) => setCab({ ...cab, razonSocial: e.target.value })} /></Campo>
           <Campo etiqueta="Tipo"><Selector value={cab.tipoComprobante} onChange={(e) => setCab({ ...cab, tipoComprobante: e.target.value })}><option value="FACTURA">Factura</option><option value="BOLETA">Boleta</option><option value="NOTA_COMPRA">Nota de compra</option></Selector></Campo>
           <div className="grid grid-cols-2 gap-3">
-            <Campo etiqueta="Serie"><Entrada value={cab.serie} onChange={(e) => setCab({ ...cab, serie: e.target.value.toUpperCase() })} placeholder="F001" /></Campo>
-            <Campo etiqueta="Número"><Entrada value={cab.numero} onChange={(e) => setCab({ ...cab, numero: e.target.value })} placeholder="14147" /></Campo>
+            <Campo etiqueta="Serie"><Entrada value={cab.serie} maxLength={4} onChange={(e) => setCab({ ...cab, serie: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4) })} placeholder="F001" /></Campo>
+            <Campo etiqueta="Número"><Entrada value={cab.numero} inputMode="numeric" maxLength={10} onChange={(e) => setCab({ ...cab, numero: e.target.value.replace(/\D/g, "").slice(0, 10) })} placeholder="14147" /></Campo>
           </div>
           <Campo etiqueta="Fecha de emisión"><Entrada type="date" value={cab.fechaEmision} onChange={(e) => setCab({ ...cab, fechaEmision: e.target.value })} /></Campo>
         </div>

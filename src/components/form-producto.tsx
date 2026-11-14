@@ -75,7 +75,7 @@ export function FormProducto({ producto: p, categorias, laboratorios, alCerrar, 
     <Modal abierto alCerrar={alCerrar} titulo={p ? "Editar producto" : "Agregar producto"} ancho="max-w-2xl">
       <div className="space-y-5">
         <div className="grid sm:grid-cols-2 gap-3">
-          <Campo etiqueta="Código de barras" ayuda="Al escanearlo se vende por unidad"><Entrada autoFocus value={f.codigo} onChange={(e) => cambiar("codigo", e.target.value.trim())} placeholder="7750000000011" /></Campo>
+          <Campo etiqueta="Código de barras" ayuda="Al escanearlo se vende por unidad"><Entrada autoFocus value={f.codigo} onChange={(e) => cambiar("codigo", e.target.value.replace(/[^A-Za-z0-9-]/g, "").slice(0, 20))} placeholder="7750000000011" /></Campo>
           <SelectorLaboratorio laboratorios={catalogo} valor={lab} alElegir={elegirLab} />
           <Campo etiqueta="Nombre del producto" className="sm:col-span-2"><Entrada value={f.nombre} onChange={(e) => { setConfirmarDuplicado(false); setError(null); cambiar("nombre", e.target.value); }} placeholder="Dolofenex Forte cápsula" /></Campo>
           <Campo etiqueta="Nombre comercial o marca (opcional)" ayuda="Como lo pide el cliente; se puede buscar por aquí"><Entrada value={f.nombreComercial} onChange={(e) => cambiar("nombreComercial", e.target.value)} placeholder="Panadol" /></Campo>
@@ -101,10 +101,10 @@ export function FormProducto({ producto: p, categorias, laboratorios, alCerrar, 
           <div className="grid sm:grid-cols-[110px_minmax(0,1fr)_minmax(0,1fr)] gap-3 mt-3">
             <Campo etiqueta="Unid. por blíster"><EntradaNumero inputMode="numeric" value={f.bFactor} onChange={(e) => cambiar("bFactor", e.target.value.replace(/\D/g, ""))} placeholder="10" /></Campo>
             <Campo etiqueta="Precio del blíster (opcional)" ayuda={ayudaPrecio("bPvp", bPvp, num(f.bFactor))}><EntradaNumero inputMode="decimal" value={bPvp} onChange={(e) => escribirPrecio("bPvp", e.target.value)} placeholder="0.00" /></Campo>
-            <Campo etiqueta="Código del blíster (opcional)"><Entrada value={f.bCodigo} onChange={(e) => cambiar("bCodigo", e.target.value.trim())} /></Campo>
+            <Campo etiqueta="Código del blíster (opcional)"><Entrada value={f.bCodigo} onChange={(e) => cambiar("bCodigo", e.target.value.replace(/[^A-Za-z0-9-]/g, "").slice(0, 20))} /></Campo>
             <Campo etiqueta="Unid. por caja"><EntradaNumero inputMode="numeric" value={f.cFactor} onChange={(e) => cambiar("cFactor", e.target.value.replace(/\D/g, ""))} placeholder="100" /></Campo>
             <Campo etiqueta="Precio de la caja (opcional)" ayuda={ayudaPrecio("cPvp", cPvp, num(f.cFactor))}><EntradaNumero inputMode="decimal" value={cPvp} onChange={(e) => escribirPrecio("cPvp", e.target.value)} placeholder="0.00" /></Campo>
-            <Campo etiqueta="Código de la caja (opcional)"><Entrada value={f.cCodigo} onChange={(e) => cambiar("cCodigo", e.target.value.trim())} /></Campo>
+            <Campo etiqueta="Código de la caja (opcional)"><Entrada value={f.cCodigo} onChange={(e) => cambiar("cCodigo", e.target.value.replace(/[^A-Za-z0-9-]/g, "").slice(0, 20))} /></Campo>
           </div>
         </fieldset>
         {!p ? <p className="text-[13px] text-ink-2">El producto se crea con stock 0. Las unidades entran al registrar la compra, con su lote y vencimiento.</p> : null}

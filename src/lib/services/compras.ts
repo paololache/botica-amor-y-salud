@@ -13,7 +13,7 @@ export const esquemaRecepcion = z.object({
   proveedor: z.object({ ruc: z.string().regex(/^(10|20)\d{9}$/, "RUC de 11 dígitos"), razonSocial: texto(3) }),
   tipoComprobante: z.enum(["FACTURA", "BOLETA", "NOTA_COMPRA"]),
   serie: texto(1).max(8),
-  numero: texto(1).max(12),
+  numero: z.string().trim().regex(/^\d{1,10}$/, "el número del comprobante solo lleva dígitos (hasta 10)"),
   fechaEmision: fecha,
   items: z.array(z.object({
     presentacionId: z.number().int(),

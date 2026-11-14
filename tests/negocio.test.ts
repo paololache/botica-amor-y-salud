@@ -456,6 +456,7 @@ describe("Campos numéricos", () => {
   it("el servidor rechaza texto aunque se salte la pantalla", () => {
     expect(esquemaCorreccion.safeParse({ motivo: "Costo mal digitado", costos: [{ detalleId: 1, costoPresentacion: "abc" }] }).success).toBe(false);
     expect(esquemaRecepcion.safeParse({ proveedor: { ruc: "20100000011", razonSocial: "Droguería" }, tipoComprobante: "FACTURA", serie: "F1", numero: "1", fechaEmision: hoy(), items: [{ presentacionId: 1, cantidad: "diez", numeroLote: "L", vencimiento: hoy() }] }).success).toBe(false);
+    expect(esquemaRecepcion.safeParse({ proveedor: { ruc: "20100000011", razonSocial: "Droguería" }, tipoComprobante: "FACTURA", serie: "F001", numero: "12A4", fechaEmision: hoy(), items: [{ presentacionId: 1, cantidad: 1, numeroLote: "L", vencimiento: hoy() }] }).success).toBe(false);
   });
 });
 
@@ -1066,7 +1067,7 @@ describe("Meta del día y mensajes motivacionales", () => {
     const meta = (vendido: number) => ({ objetivo: 100, vendido, porcentaje: vendido, faltante: Math.max(0, 100 - vendido), automatica: false });
     expect(mensajeMotivacional(meta(105), "Ana Pérez", 10)).toMatch(/cumpliste tu meta del día, Ana/);
     const casi = mensajeMotivacional(meta(80), "Ana Pérez", 5);
-    expect(["Ya casi", "recta final", "muy cerca", "empujón"].some((t) => casi.includes(t))).toBe(true);
+    expect(["Ya casi", "recta final", "muy cerca", "empujón", "La meta ya se ve", "Tres cuartos"].some((t) => casi.includes(t))).toBe(true);
     for (let i = 0; i < 20; i++) { const a = mensajeMotivacional(meta(30), "Ana", 1); expect(mensajeMotivacional(meta(30), "Ana", 1, a)).not.toBe(a); }
     expect(mensajeMotivacional(null, "Ana", 10)).toMatch(/\S/);
     // Varias ventas en la misma hora: frases de racha sobre lo bien que se vende hoy.

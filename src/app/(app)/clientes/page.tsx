@@ -124,8 +124,8 @@ export default function Clientes() {
         {form ? (
           <div className="space-y-3">
             <div className="grid grid-cols-[110px_1fr] gap-2">
-              <Campo etiqueta="Documento"><Selector value={form.datos.tipoDoc} onChange={(e) => setForm({ ...form, datos: { ...form.datos, tipoDoc: e.target.value } })}><option value="DNI">DNI</option><option value="RUC">RUC</option><option value="CE">C. E.</option></Selector></Campo>
-              <Campo etiqueta="Número"><Entrada value={form.datos.numero} onChange={(e) => setForm({ ...form, datos: { ...form.datos, numero: e.target.value.trim().toUpperCase().slice(0, 12) } })} inputMode={form.datos.tipoDoc === "CE" ? "text" : "numeric"} /></Campo>
+              <Campo etiqueta="Documento"><Selector value={form.datos.tipoDoc} onChange={(e) => setForm({ ...form, datos: { ...form.datos, tipoDoc: e.target.value, numero: "" } })}><option value="DNI">DNI</option><option value="RUC">RUC</option><option value="CE">C. E.</option></Selector></Campo>
+              <Campo etiqueta="Número"><Entrada value={form.datos.numero} onChange={(e) => { const t = form.datos.tipoDoc; const v = e.target.value.toUpperCase(); setForm({ ...form, datos: { ...form.datos, numero: t === "CE" ? v.replace(/[^A-Z0-9]/g, "").slice(0, 12) : v.replace(/\D/g, "").slice(0, t === "RUC" ? 11 : 8) } }); }} inputMode={form.datos.tipoDoc === "CE" ? "text" : "numeric"} /></Campo>
             </div>
             <Campo etiqueta={form.datos.tipoDoc === "RUC" ? "Razón social" : "Nombre completo"}><Entrada value={form.datos.nombre} maxLength={120} onChange={(e) => setForm({ ...form, datos: { ...form.datos, nombre: e.target.value } })} /></Campo>
             <div className="grid sm:grid-cols-2 gap-2">
