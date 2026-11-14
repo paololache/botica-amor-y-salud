@@ -1,0 +1,1 @@
+ALTER TABLE "servicio" ADD COLUMN "precio_externo" numeric(12, 2);

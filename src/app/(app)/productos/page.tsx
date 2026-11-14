@@ -9,7 +9,7 @@ import { useUsuario } from "@/components/shell";
 import { tieneRol } from "@/lib/permisos";
 
 type P = {
-  id: number; codigo: string; nombre: string; principioActivo: string | null; concentracion: string | null; formaFarmaceutica: string | null; registroSanitario: string | null; registroVence: string | null;
+  id: number; codigo: string; nombre: string; nombreComercial: string | null; patologias: string | null; principioActivo: string | null; concentracion: string | null; formaFarmaceutica: string | null; registroSanitario: string | null; registroVence: string | null;
   laboratorioId: number | null; laboratorio: string | null; categoria: string | null; condicionVenta: string; ubicacion: string | null;
   stock: number; stockVigente: number; stockMinimo: number; proximoVencimiento: string | null; costoPromedio?: number; porcentajeUtilidad?: number;
   enPromocion: boolean; campana: { id: number; porcentaje: number; estado: string; inicio: string; fin: string; nombre: string } | null; presentaciones: { id: number; nombre: string; factor: number; pvp: number; codigo: string | null }[];
@@ -37,8 +37,15 @@ export default function Productos() {
   const [cat, setCat] = useState("");
   const [filtro, setFiltro] = useState<"todos" | "promocion" | "bajo" | "vencer">("todos");
   const [pagina, setPagina] = useState(1);
+  const [campo, setCampo] = useState("todo");
+  const [patologias, setPatologias] = useState<{ sinPatologia: number; posibles: number } | null>(null);
+  useEffect(() => { if (u.roles.includes("ADMIN")) api<{ sinPatologia: number; posibles: number }>("/api/productos/patologias").then(setPatologias).catch(() => undefined); }, [u.roles]);
+  const completar = async () => {
+    try { const r = await api<{ completados: number }>("/api/productos/patologias", { metodo: "POST" }); avisar("ok", `Patología completada en ${r.completados} productos. Revísalas y corrígelas en la ficha si hace falta.`); setPatologias(null); recargar(); }
+    catch (e) { avisar("error", (e as Error).message); }
+  };
   useEffect(() => { const h = setTimeout(() => { setQq(q); setPagina(1); }, 250); return () => clearTimeout(h); }, [q]);
-  const { datos, recargar, setDatos } = useDatos<Lista>(`/api/productos?q=${encodeURIComponent(qq)}&categoria=${cat}&filtro=${filtro === "todos" ? "" : filtro}&pagina=${pagina}`);
+  const { datos, recargar, setDatos } = useDatos<Lista>(`/api/productos?q=${encodeURIComponent(qq)}&categoria=${cat}&filtro=${filtro === "todos" ? "" : filtro}&pagina=${pagina}&campo=${campo}`);
   const [ficha, setFicha] = useState<Ficha | null>(null);
   const [form, setForm] = useState<{ producto: ProductoEditable | null } | null>(null);
   const puedeKardex = tieneRol(u.roles, "ADMIN", "QF", "INVENTARIADOR", "CONTADOR");
@@ -57,14 +64,18 @@ export default function Productos() {
   return (
     <div>
       <Encabezado titulo="Productos y stock" bajada={u.verCostos ? "Stock vigente por producto. El interruptor activa o pausa la campaña de promoción." : "Stock vigente y precios de venta."}>
+        {patologias && patologias.posibles > 0 ? <Boton variante="borde" onClick={completar} title={`${patologias.sinPatologia} productos no tienen patología`}>Completar patologías ({patologias.posibles})</Boton> : null}
         {u.roles.includes("ADMIN") ? <Link href="/campanas"><Boton variante="borde">Nueva campaña</Boton></Link> : null}
         {u.roles.includes("ADMIN") ? <Boton variante="amor" onClick={() => setForm({ producto: null })}><Plus size={16} /> Agregar producto</Boton> : null}
       </Encabezado>
       <div className="flex flex-wrap items-center gap-3 mb-4">
         <div className="relative flex-1 min-w-[240px] max-w-md">
           <Search size={17} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-3" />
-          <Entrada className="pl-9" placeholder="Nombre, principio activo, laboratorio o código" value={q} onChange={(e) => setQ(e.target.value)} />
+          <Entrada className="pl-9" placeholder="Nombre, marca, principio activo, patología o código" value={q} onChange={(e) => setQ(e.target.value)} />
         </div>
+        <Selector className="w-48" value={campo} onChange={(e) => { setCampo(e.target.value); setPagina(1); }} aria-label="Buscar por">
+          <option value="todo">Buscar en todo</option><option value="nombre">Por nombre o marca</option><option value="principio">Por principio activo</option><option value="patologia">Por patología</option>
+        </Selector>
         <Selector className="w-52" value={cat} onChange={(e) => { setCat(e.target.value); setPagina(1); }} aria-label="Categoría">
           <option value="">Todas las categorías</option>
           {datos?.categorias.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}
@@ -87,8 +98,9 @@ export default function Productos() {
                     <tr key={p.id}>
                       <td className="text-[12.5px] text-ink-2 tabular-nums whitespace-nowrap">{p.codigo}</td>
                       <td>
-                        <span className="font-semibold">{p.nombre}</span>
+                        <span className="font-semibold">{p.nombre}</span>{p.nombreComercial ? <span className="text-[12.5px] text-ink-2"> · {p.nombreComercial}</span> : null}
                         <span className="block text-[12px] text-ink-3">{[p.principioActivo, p.concentracion, p.formaFarmaceutica, p.categoria].filter(Boolean).join(" · ")}</span>
+                        {p.patologias ? <span className="block text-[12px] text-petroleo-3">Para: {p.patologias}</span> : null}
                         {p.registroVence && p.registroVence < hoyLima() ? <Insignia tono="rojo" className="mt-1">Registro vencido</Insignia> : null}
                       </td>
                       <td className="text-ink-2">{p.laboratorio ?? "—"}</td>
@@ -134,6 +146,7 @@ export default function Productos() {
         {ficha ? (
           <div>
             <p className="text-sm text-ink-2">{[ficha.codigo, ficha.principioActivo, ficha.concentracion, ficha.formaFarmaceutica, ficha.laboratorio, ficha.ubicacion && `Ubicación ${ficha.ubicacion}`].filter(Boolean).join(" · ")}</p>
+            {ficha.nombreComercial || ficha.patologias ? <p className="text-sm text-ink-2 mt-1">{[ficha.nombreComercial && `Marca ${ficha.nombreComercial}`, ficha.patologias && `Para: ${ficha.patologias}`].filter(Boolean).join(" · ")}</p> : null}
             {ficha.registroSanitario ? <p className="text-sm text-ink-2 mt-1">Registro sanitario {ficha.registroSanitario}{ficha.registroVence ? ` · vence ${vence(ficha.registroVence)}` : ""}</p> : null}
             <div className="flex flex-wrap gap-2 mt-4">
               {ficha.presentaciones.map((p) => <div key={p.id} className="rounded-xl border border-foil-2 px-3 py-2"><p className="text-[12px] text-ink-3">{p.nombre}</p><p className="font-semibold">{soles(p.pvp)}</p>{p.codigo ? <p className="text-[11.5px] text-ink-3 tabular-nums">{p.codigo}</p> : null}</div>)}

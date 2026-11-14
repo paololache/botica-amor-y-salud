@@ -8,7 +8,7 @@ import { tieneRol, verCostos } from "../permisos";
 import { ErrorNegocio, MEDIOS, r2, type Medio } from "../util";
 import { filas } from "../sqlrows";
 import { parametros } from "./parametros";
-import { anularVenta, esquemaVenta, registrarVenta } from "./ventas";
+import { anularVenta, esquemaVentaBase, registrarVenta } from "./ventas";
 
 const { caja, sesionCaja, movimientoCaja, venta, ventaPago, usuario, cliente, comision, auditoria, regularizacionCierre } = schema;
 
@@ -399,8 +399,8 @@ export const esquemaRegularizacion = z.discriminatedUnion("accion", [
   // Un ingreso que en realidad fue una venta: se registran los productos y el vendedor.
   z.object({
     accion: z.literal("CONVERTIR_EN_VENTA"), clave: z.string(), vendedorId: z.number().int(),
-    tipoComprobante: esquemaVenta.shape.tipoComprobante, cliente: esquemaVenta.shape.cliente,
-    items: esquemaVenta.shape.items, operacion, comentario: z.string().trim().max(250).optional(),
+    tipoComprobante: esquemaVentaBase.shape.tipoComprobante, cliente: esquemaVentaBase.shape.cliente,
+    items: esquemaVentaBase.shape.items, operacion, comentario: z.string().trim().max(250).optional(),
   }),
 ]);
 

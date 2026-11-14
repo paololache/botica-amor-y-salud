@@ -10,6 +10,7 @@ import { sql } from "drizzle-orm";
 import { schema, type Db } from "@/db";
 import { claveLaboratorio, hoy as hoyLima, sumarDias, r2, r4 } from "./util";
 import { evaluarAlertas } from "./services/alertas";
+import { sugerirPatologias } from "./terapeutica";
 
 const N_SINT = Number(process.env.SEED_PRODUCTOS ?? 300);
 const DIAS = Number(process.env.SEED_DIAS ?? 60);
@@ -28,6 +29,21 @@ const LABS = ["Genfar", "Portugal", "Medifarma", "Farmindustria", "Hersil", "Ind
 
 type Base = { nombre: string; pa?: string; conc?: string; cat: number; precio: number; tipo: "TAB" | "UNI"; cond?: "RECETA" | "RECETA_RETENIDA"; pop: number };
 const B = (nombre: string, cat: number, precio: number, tipo: "TAB" | "UNI", pop: number, pa?: string, conc?: string, cond?: "RECETA" | "RECETA_RETENIDA"): Base => ({ nombre, cat, precio, tipo, pop, pa, conc, cond });
+/** Datos de ejemplo para buscar por marca o por patología (para qué sirve). */
+const USO: Record<string, [string | null, string]> = {
+  "Paracetamol 500 mg": ["Panadol", "fiebre, dolor de cabeza, dolor muscular"], "Paracetamol 1 g": ["Panadol Forte", "fiebre, dolor de cabeza, dolor muscular"],
+  "Ibuprofeno 400 mg": ["Motrin", "dolor, inflamación, fiebre, dolor menstrual"], "Ibuprofeno 600 mg": ["Motrin", "dolor, inflamación, fiebre"],
+  "Naproxeno 550 mg": ["Apronax", "dolor, inflamación, dolor menstrual"], "Diclofenaco 50 mg": ["Voltaren", "dolor, inflamación, dolor muscular"],
+  "Amoxicilina 500 mg": [null, "infección respiratoria, infección de garganta"], "Azitromicina 500 mg": ["Zitromax", "infección respiratoria"],
+  "Ciprofloxacino 500 mg": [null, "infección urinaria"], "Metronidazol 500 mg": ["Flagyl", "infección intestinal, parásitos"],
+  "Loratadina 10 mg": ["Clarityne", "alergia, rinitis, urticaria"], "Cetirizina 10 mg": ["Zyrtec", "alergia, rinitis"], "Clorfenamina 4 mg": [null, "alergia, resfrío"],
+  "Omeprazol 20 mg": [null, "gastritis, acidez, reflujo, úlcera"], "Pantoprazol 40 mg": [null, "gastritis, acidez, reflujo"],
+  "Metformina 850 mg": ["Glucophage", "diabetes"], "Losartán 50 mg": ["Cozaar", "presión alta, hipertensión"], "Enalapril 10 mg": [null, "presión alta, hipertensión"],
+  "Amlodipino 5 mg": ["Norvasc", "presión alta, hipertensión"], "Atorvastatina 20 mg": ["Lipitor", "colesterol alto"],
+  "Hioscina 10 mg": ["Buscapina", "cólico, dolor de estómago"], "Loperamida 2 mg": ["Imodium", "diarrea"], "Antigripal tabletas": ["Panadol Antigripal", "gripe, resfrío, congestión nasal"],
+  "Ambroxol jarabe 120 ml": ["Mucosolvan", "tos con flema"], "Jarabe para la tos 120 ml": [null, "tos seca, tos"], "Salbutamol inhalador 100 mcg": ["Ventolin", "asma, bronquitis"],
+  "Sales de rehidratación oral": [null, "deshidratación, diarrea"], "Suero oral 1 L": ["Electrolight", "deshidratación"],
+};
 const BASE: Base[] = [
   B("Paracetamol 500 mg", 0, 0.25, "TAB", 10, "Paracetamol", "500 mg"), B("Paracetamol 1 g", 0, 0.5, "TAB", 4, "Paracetamol", "1 g"),
   B("Ibuprofeno 400 mg", 0, 0.4, "TAB", 9, "Ibuprofeno", "400 mg"), B("Ibuprofeno 600 mg", 0, 0.6, "TAB", 4, "Ibuprofeno", "600 mg"),
@@ -71,7 +87,7 @@ export async function sembrar(db: Db, opciones: { reset?: boolean } = {}): Promi
   const [{ n }] = await db.select({ n: sql<number>`count(*)`.mapWith(Number) }).from(schema.usuario);
   if (n > 0) {
     if (!opciones.reset) return "La base ya tiene datos. Usa SEED_RESET=1 para reiniciarla.";
-    await db.execute(sql`truncate table regularizacion_cierre, meta_mensual, uso_modulo, transferencia_detalle, transferencia, auditoria, reporte_guardado, metrica, parametro, alerta, liquidacion_mensual, comision_diaria, comision, complemento, campana, kardex, mov_detalle, movimiento_inventario, motivo, compra_detalle, compra, proveedor, venta_pago, venta_detalle, venta, correlativo, cliente, movimiento_caja, sesion_caja, caja, lote, presentacion, producto, laboratorio, categoria, usuario restart identity cascade`);
+    await db.execute(sql`truncate table venta_servicio, atencion_servicio, servicio, regularizacion_cierre, meta_mensual, uso_modulo, transferencia_detalle, transferencia, auditoria, reporte_guardado, metrica, parametro, alerta, liquidacion_mensual, comision_diaria, comision, complemento, campana, kardex, mov_detalle, movimiento_inventario, motivo, compra_detalle, compra, proveedor, venta_pago, venta_detalle, venta, correlativo, cliente, movimiento_caja, sesion_caja, caja, lote, presentacion, producto, laboratorio, categoria, usuario restart identity cascade`);
   }
   const t0 = Date.now();
   const hoy = hoyLima();
@@ -109,6 +125,7 @@ export async function sembrar(db: Db, opciones: { reset?: boolean } = {}): Promi
     const chunk = defs.slice(i, i + 500);
     const rows = await db.insert(schema.producto).values(chunk.map((d) => ({
       codigo: d.codigo, nombre: d.nombre, principioActivo: d.pa ?? null, concentracion: d.conc ?? null, laboratorioId: labId.get(d.lab), categoriaId: cats[d.cat].id,
+      nombreComercial: USO[d.nombre]?.[0] ?? null, patologias: USO[d.nombre]?.[1] ?? sugerirPatologias(d.pa, d.nombre),
       condicionVenta: (d.cond ?? "LIBRE") as "LIBRE" | "RECETA" | "RECETA_RETENIDA", stockMinimo: d.tipo === "TAB" ? 50 : 3, porcentajeUtilidad: d.util, ubicacion: `A${ent(1, 8)}-F${ent(1, 5)}`,
     }))).returning({ id: schema.producto.id });
     const presVals: (typeof schema.presentacion.$inferInsert)[] = [];

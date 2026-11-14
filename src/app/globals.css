@@ -110,3 +110,7 @@ input[type="number"]::-webkit-inner-spin-button { opacity: .4; }
   html, body { background: #fff; }
   .tarjeta { border: none; }
 }
+
+/* Detalle de la venta: columnas compactas para que quepan importe y eliminar sin desplazarse. */
+.tabla.carrito th, .tabla.carrito td { padding-left: 7px; padding-right: 7px; }
+.tabla.carrito th { white-space: normal; line-height: 1.25; vertical-align: bottom; }

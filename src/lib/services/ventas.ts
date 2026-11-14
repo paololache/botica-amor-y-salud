@@ -12,25 +12,34 @@ import { revertirComisionesVenta, misComisiones } from "./comisiones";
 import { metaDelDia } from "./metas";
 import { parametros } from "./parametros";
 import { enviarCpe } from "./sunat";
+import { filas } from "../sqlrows";
+import type { Ritmo } from "../motivacion";
 
-const { venta, ventaDetalle, ventaPago, presentacion, producto, correlativo, cliente, comision, usuario, auditoria, lote } = schema;
+const { venta, ventaDetalle, ventaPago, ventaServicio, servicio, presentacion, producto, correlativo, cliente, comision, usuario, auditoria, lote } = schema;
 
 export const SERIES = { BOLETA: "B001", FACTURA: "F001", NOTA_VENTA: "NV01" } as const;
 
-export const esquemaVenta = z.object({
+export const esquemaVentaBase = z.object({
   items: z.array(z.object({
     presentacionId: z.number().int(),
     cantidad: z.number().int().positive().max(100000),
     descuentoPct: z.number().min(0).max(100).default(0),
     origen: z.enum(["DIRECTA", "SUGERENCIA"]).default("DIRECTA"),
-  })).min(1).max(60),
+  })).max(60).default([]),
+  /** Servicios cobrados en la misma venta (p. ej. aplicación del inyectable que se vende). */
+  servicios: z.array(z.object({
+    servicioId: z.number().int(),
+    cantidad: z.number().int().positive().max(20).default(1),
+    origen: z.enum(["INTERNO", "EXTERNO"]).optional(), // inyectables: medicamento de la botica o traído por el paciente
+  })).max(10).default([]),
   tipoComprobante: z.enum(["BOLETA", "FACTURA", "NOTA_VENTA"]),
   cliente: z.object({ tipoDoc: z.enum(["DNI", "RUC"]), numero: texto(1).max(11), nombre: texto(2) }).optional(),
   pagos: z.array(z.object({ medio: z.enum(MEDIOS), monto })).min(1),
   receta: z.object({ medico: texto(3), cmp: texto(3), numero: texto(1) }).optional(),
   autorizacion: z.object({ login: z.string(), password: z.string() }).optional(),
 });
-export type EntradaVenta = z.infer<typeof esquemaVenta>;
+export const esquemaVenta = esquemaVentaBase.refine((v) => v.items.length + v.servicios.length > 0, { message: "agrega al menos un producto o servicio", path: ["items"] });
+export type EntradaVenta = z.input<typeof esquemaVenta>;
 
 export async function siguienteNumero(tx: Db, serie: string): Promise<number> {
   const [r] = await tx.insert(correlativo).values({ serie, ultimo: 1 })
@@ -45,8 +54,19 @@ export async function crearVenta(db: Db, user: Sesion, input: EntradaVenta) {
     .where(and(eq(schema.sesionCaja.usuarioId, user.id), eq(schema.sesionCaja.estado, "ABIERTA"))).orderBy(desc(schema.sesionCaja.id)).limit(1);
   if (!sesion || sesion.estado !== "ABIERTA") throw new ErrorNegocio("SIN_CAJA", "Abre tu caja para poder vender (RN-01).");
   const resultado = await registrarVenta(db, { actor: user, vendedor: user, sesionId: sesion.id, input });
-  const [mias, meta] = await Promise.all([misComisiones(db, user.id), metaDelDia(db, user.id)]);
-  return { ...resultado, comisionHoy: mias.hoy, comisionMes: mias.mes, meta };
+  const [mias, meta, ritmo] = await Promise.all([misComisiones(db, user.id), metaDelDia(db, user.id), ritmoDeVentas(db, user.id)]);
+  return { ...resultado, comisionHoy: mias.hoy, comisionMes: mias.mes, meta, ritmo };
+}
+
+/** Cuántas ventas lleva quien vende en la última hora y en el día: alimenta los mensajes de racha. */
+export async function ritmoDeVentas(db: Db, usuarioId: number, ahora = new Date()): Promise<Ritmo> {
+  const haceUnaHora = new Date(ahora.getTime() - 3600_000);
+  const [r] = await filas<{ hora: string; monto: string; hoy: string }>(db, sql`
+    select count(*) filter (where fecha >= ${haceUnaHora.toISOString()}) as hora,
+      coalesce(sum(total - delivery) filter (where fecha >= ${haceUnaHora.toISOString()}), 0) as monto,
+      count(*) as hoy
+    from venta where usuario_id = ${usuarioId} and estado = 'EMITIDA' and canal = 'MOSTRADOR' and fecha >= ${inicioDiaLima(hoyLima(ahora)).toISOString()}`);
+  return { ultimaHora: Number(r?.hora ?? 0), montoUltimaHora: r2(Number(r?.monto ?? 0)), hoy: Number(r?.hoy ?? 0) };
 }
 
 type OpcionesVenta = {
@@ -68,15 +88,16 @@ export async function registrarVenta(db: Db, { actor: user, vendedor, sesionId, 
   const hoy = fecha ? hoyLima(fecha) : hoyReal;
   const p = await parametros(db);
 
-  const presIds = input.items.map((i) => i.presentacionId);
-  const pres = await db.select({ p: presentacion, prod: producto }).from(presentacion).innerJoin(producto, eq(producto.id, presentacion.productoId))
-    .where(inArray(presentacion.id, presIds));
+  const items = (input.items ?? []).map((it) => ({ ...it, descuentoPct: it.descuentoPct ?? 0, origen: it.origen ?? "DIRECTA" }));
+  const presIds = items.map((i) => i.presentacionId);
+  const pres = presIds.length ? await db.select({ p: presentacion, prod: producto }).from(presentacion).innerJoin(producto, eq(producto.id, presentacion.productoId))
+    .where(inArray(presentacion.id, presIds)) : [];
   const mapa = new Map(pres.map((x) => [x.p.id, x]));
   const enCampana = await preciosCampana(db, [...new Set(pres.map((x) => x.prod.id))], hoy);
 
   let total = 0, descuento = 0;
   let requiereAutorizacion = false;
-  const lineas = input.items.map((it) => {
+  const lineas = items.map((it) => {
     const x = mapa.get(it.presentacionId);
     if (!x || !x.p.activo || !x.prod.activo) throw new ErrorNegocio("PRODUCTO_INVALIDO", "Uno de los productos ya no está disponible.");
     if (it.descuentoPct > p.descuento_max_pct) requiereAutorizacion = true;
@@ -102,6 +123,24 @@ export async function registrarVenta(db: Db, { actor: user, vendedor, sesionId, 
       total = r2(totalObjetivo); descuento = r2(descuento + extra);
     }
   }
+
+  // Servicios de la venta: el precio sale del catálogo (inyectable con medicamento externo puede tener otro precio).
+  const pedidos = input.servicios ?? [];
+  const catServicios = pedidos.length ? await db.select().from(servicio).where(inArray(servicio.id, pedidos.map((x) => x.servicioId))) : [];
+  const lineasServicio = pedidos.map((x) => {
+    const sv = catServicios.find((c) => c.id === x.servicioId);
+    if (!sv || !sv.activo) throw new ErrorNegocio("SERVICIO_INVALIDO", "Uno de los servicios ya no está disponible.");
+    const externo = sv.tipo === "INYECTABLE" && x.origen === "EXTERNO";
+    const precio = r2(externo && sv.precioExterno != null ? sv.precioExterno : sv.precio);
+    if (!(precio > 0)) throw new ErrorNegocio("SERVICIO_GRATUITO", `${sv.nombre} es gratuito: regístralo en Servicios, no en la venta.`, 422);
+    const cantidad = x.cantidad ?? 1;
+    return { servicio: sv, cantidad, precio, subtotal: r2(precio * cantidad), descripcion: `${sv.nombre}${sv.tipo === "INYECTABLE" ? (externo ? " (medicamento externo)" : " (medicamento de la botica)") : ""}` };
+  });
+  total = r2(total + lineasServicio.reduce((a, x) => a + x.subtotal, 0));
+  // Operaciones según el tipo de IGV del producto; los servicios son gravados.
+  const porTipo = (t: string) => r2(lineas.filter((l) => (l.prod.tipoIgv ?? "GRAVADO") === t).reduce((a, l) => a + l.subtotal, 0));
+  const gravadoConIgv = r2(porTipo("GRAVADO") + lineasServicio.reduce((a, x) => a + x.subtotal, 0));
+  const exonerada = porTipo("EXONERADO"), inafecta = porTipo("INAFECTO");
 
   // Regla de negocio: un descuento no puede dejar el producto por debajo del costo + IGV; vender bajo costo es decisión
   // solo del administrador (el precio de lista y el de campaña ya los fija él, por eso no se bloquean).
@@ -135,13 +174,15 @@ export async function registrarVenta(db: Db, { actor: user, vendedor, sesionId, 
     const numero = await siguienteNumero(tx, serie);
     let clienteId: number | null = null;
     if (input.cliente) {
-      const [c] = await tx.insert(cliente).values(input.cliente).onConflictDoUpdate({ target: cliente.numero, set: { nombre: input.cliente.nombre } }).returning({ id: cliente.id });
+      // Sin nombre escrito llega «Cliente»: no se pisa el nombre que ya tenía el cliente registrado.
+      const [c] = await tx.insert(cliente).values(input.cliente).onConflictDoUpdate({ target: cliente.numero, set: { nombre: sql`case when excluded.nombre = 'Cliente' then ${cliente.nombre} else excluded.nombre end` } }).returning({ id: cliente.id });
       clienteId = c.id;
     }
-    const subtotal = r2(total / 1.18);
+    const subtotal = r2(gravadoConIgv / 1.18);
+    const igv = r2(gravadoConIgv - subtotal);
     const [v] = await tx.insert(venta).values({
       sesionId, usuarioId: vendedor.id, clienteId, ...(fecha ? { fecha } : {}), tipoComprobante: input.tipoComprobante, serie, numero,
-      subtotal, igv: r2(total - subtotal), descuento, total, receta: input.receta ?? null, cpeEstado: "PENDIENTE",
+      subtotal, igv, exonerada, inafecta, descuento, total, receta: input.receta ?? null, cpeEstado: "PENDIENTE",
     }).returning();
     const ref = `${serie}-${String(numero).padStart(6, "0")}`;
     let costoTotal = 0, comisionVenta = 0;
@@ -158,7 +199,7 @@ export async function registrarVenta(db: Db, { actor: user, vendedor, sesionId, 
         costoTotal += costoU * a.unidades;
         const [d] = await tx.insert(ventaDetalle).values({
           ventaId: v.id, productoId: l.prod.id, presentacionId: l.pres.id, loteId: a.loteId, cantidad: a.unidades / l.pres.factor, unidades: a.unidades,
-          precioUnitario: l.pres.pvp, descuento: r2(l.desc * a.unidades / l.unidades), subtotal: parte, costoUnitario: costoU, origen: l.origen,
+          precioUnitario: l.pres.pvp, descuento: r2(l.desc * a.unidades / l.unidades), subtotal: parte, costoUnitario: costoU, origen: l.origen, tipoIgv: l.prod.tipoIgv ?? "GRAVADO",
         }).returning({ id: ventaDetalle.id });
         await registrarKardex(tx, { productoId: l.prod.id, loteId: a.loteId, tipo: "VENTA", documentoTipo: input.tipoComprobante, documentoId: v.id, documentoRef: ref, salida: a.unidades, costoUnitario: costoU, usuarioId: user.id });
         const camp = comisiona ? await campanaActiva(tx, l.prod.id, a.loteId, hoy) : null;
@@ -170,9 +211,10 @@ export async function registrarVenta(db: Db, { actor: user, vendedor, sesionId, 
         }
       }
     }
+    if (lineasServicio.length) await tx.insert(ventaServicio).values(lineasServicio.map((x) => ({ ventaId: v.id, servicioId: x.servicio.id, descripcion: x.descripcion, cantidad: x.cantidad, precioUnitario: x.precio, subtotal: x.subtotal })));
     await tx.update(venta).set({ costoTotal: r2(costoTotal) }).where(eq(venta.id, v.id));
     await tx.insert(ventaPago).values(pagos.map((x) => ({ ventaId: v.id, medio: x.medio, monto: r2(x.monto) })));
-    return { id: v.id, serie, numero, ref, total, subtotal, igv: r2(total - subtotal), vuelto, comisionVenta: r2(comisionVenta), tipoComprobante: input.tipoComprobante };
+    return { id: v.id, serie, numero, ref, total, subtotal, igv, exonerada, inafecta, vuelto, comisionVenta: r2(comisionVenta), tipoComprobante: input.tipoComprobante };
   });
 
   const cpeEstado = await enviarCpe(input.tipoComprobante);
@@ -224,13 +266,14 @@ export async function detalleVenta(db: Db, id: number, user?: Sesion) {
     .from(ventaDetalle).innerJoin(producto, eq(producto.id, ventaDetalle.productoId)).innerJoin(presentacion, eq(presentacion.id, ventaDetalle.presentacionId)).innerJoin(lote, eq(lote.id, ventaDetalle.loteId))
     .where(eq(ventaDetalle.ventaId, id));
   const pagos = await db.select().from(ventaPago).where(eq(ventaPago.ventaId, id));
+  const servicios = await db.select({ descripcion: ventaServicio.descripcion, cantidad: ventaServicio.cantidad, precio: ventaServicio.precioUnitario, subtotal: ventaServicio.subtotal }).from(ventaServicio).where(eq(ventaServicio.ventaId, id));
   const [cli] = v.clienteId ? await db.select().from(cliente).where(eq(cliente.id, v.clienteId)) : [];
   const [vend] = await db.select({ nombre: usuario.nombre }).from(usuario).where(eq(usuario.id, v.usuarioId));
   if (user && !verCostos(user.roles)) {
     const { costoTotal: _c, ...ventaSinCosto } = v;
-    return { venta: ventaSinCosto, items: items.map(({ costoUnitario: _u, ...i }) => i), pagos, cliente: cli ?? null, vendedor: vend?.nombre ?? null };
+    return { venta: ventaSinCosto, items: items.map(({ costoUnitario: _u, ...i }) => i), servicios, pagos, cliente: cli ?? null, vendedor: vend?.nombre ?? null };
   }
-  return { venta: v, items, pagos, cliente: cli ?? null, vendedor: vend?.nombre ?? null };
+  return { venta: v, items, servicios, pagos, cliente: cli ?? null, vendedor: vend?.nombre ?? null };
 }
 
 export async function reenviarPendientes(db: Db) {

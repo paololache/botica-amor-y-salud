@@ -8,3 +8,6 @@ node_modules
 next-env.d.ts
 loadtest/results
 .pg-local
+
+# Archivos del cliente (Excel de productos y listas de revisión): no se suben al repositorio
+/external/

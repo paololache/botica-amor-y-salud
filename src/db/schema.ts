@@ -39,7 +39,9 @@ export const producto = pgTable("producto", {
   id: serial("id").primaryKey(),
   codigo: text("codigo").notNull().unique(),
   nombre: text("nombre").notNull(),
+  nombreComercial: text("nombre_comercial"), // marca con que lo pide el cliente (p. ej. Panadol)
   principioActivo: text("principio_activo"),
+  patologias: text("patologias"), // para qué se usa, separado por comas (p. ej. fiebre, dolor de cabeza)
   concentracion: text("concentracion"),
   formaFarmaceutica: text("forma_farmaceutica"),
   registroSanitario: text("registro_sanitario"),
@@ -47,6 +49,7 @@ export const producto = pgTable("producto", {
   laboratorioId: integer("laboratorio_id").references(() => laboratorio.id),
   categoriaId: integer("categoria_id").references(() => categoria.id),
   condicionVenta: condicionEnum("condicion_venta").notNull().default("LIBRE"),
+  tipoIgv: text("tipo_igv").notNull().default("GRAVADO"), // GRAVADO | EXONERADO | INAFECTO
   stockMinimo: integer("stock_minimo").notNull().default(0),
   costoPromedio: cost("costo_promedio").notNull().default(0),
   porcentajeUtilidad: numeric("porcentaje_utilidad", { precision: 6, scale: 2, mode: "number" }).notNull().default(30),
@@ -125,6 +128,10 @@ export const cliente = pgTable("cliente", {
   tipoDoc: text("tipo_doc").notNull(), // DNI | RUC
   numero: text("numero").notNull().unique(),
   nombre: text("nombre").notNull(),
+  telefono: text("telefono"),
+  email: text("email"),
+  notas: text("notas"), // alergias, preferencias u otras indicaciones útiles para atenderlo
+  creadoEn: ts("creado_en").defaultNow(),
 });
 
 export const correlativo = pgTable("correlativo", {
@@ -142,8 +149,10 @@ export const venta = pgTable("venta", {
   serie: text("serie").notNull(),
   numero: integer("numero").notNull(),
   fecha: ts("fecha").notNull().defaultNow(),
-  subtotal: money("subtotal").notNull(),
+  subtotal: money("subtotal").notNull(), // operación gravada, sin IGV
   igv: money("igv").notNull(),
+  exonerada: money("exonerada").notNull().default(0),
+  inafecta: money("inafecta").notNull().default(0),
   descuento: money("descuento").notNull().default(0),
   total: money("total").notNull(),
   // Delivery que paga el cliente, incluido en el total como «Servicio de delivery»: no es venta de productos.
@@ -169,6 +178,7 @@ export const ventaDetalle = pgTable("venta_detalle", {
   subtotal: money("subtotal").notNull(),
   costoUnitario: cost("costo_unitario").notNull(),
   origen: text("origen").notNull().default("DIRECTA"), // DIRECTA | SUGERENCIA
+  tipoIgv: text("tipo_igv").notNull().default("GRAVADO"),
 }, (t) => [index("vd_venta_idx").on(t.ventaId), index("vd_producto_idx").on(t.productoId)]);
 
 export const ventaPago = pgTable("venta_pago", {
@@ -457,3 +467,69 @@ export const regularizacionCierre = pgTable("regularizacion_cierre", {
   cargoPagadoEn: ts("cargo_pagado_en"),
   cargoPagadoPor: integer("cargo_pagado_por").references(() => usuario.id),
 }, (t) => [index("regularizacion_sesion_idx").on(t.sesionId), index("regularizacion_cargo_idx").on(t.cargoUsuarioId, t.cargoEstado)]);
+
+/** Servicios farmacéuticos que ofrece la botica (toma de presión, glucosa, inyectables…). */
+export const servicio = pgTable("servicio", {
+  id: serial("id").primaryKey(),
+  codigo: text("codigo").notNull().unique(),
+  nombre: text("nombre").notNull(),
+  tipo: text("tipo").notNull(), // PRESION | GLUCOSA | INYECTABLE | TEMPERATURA | ANTROPOMETRIA | OTRO
+  via: text("via"), // inyectables: IM | SC | ID | IV
+  descripcion: text("descripcion"),
+  precio: money("precio").notNull().default(0), // inyectables: con medicamento de la botica
+  precioExterno: money("precio_externo"), // inyectables: con medicamento que trae el paciente (null = mismo precio)
+  requiereReceta: boolean("requiere_receta").notNull().default(false),
+  requiereConsentimiento: boolean("requiere_consentimiento").notNull().default(false),
+  roles: text("roles").array().notNull(), // quién puede realizarlo
+  orden: integer("orden").notNull().default(0),
+  activo: boolean("activo").notNull().default(true),
+});
+
+/** Cada atención registrada: paciente, resultados, producto aplicado y cobro (entra a la caja como ingreso). */
+export const atencionServicio = pgTable("atencion_servicio", {
+  id: serial("id").primaryKey(),
+  servicioId: integer("servicio_id").notNull().references(() => servicio.id),
+  fecha: ts("fecha").notNull().defaultNow(),
+  usuarioId: integer("usuario_id").notNull().references(() => usuario.id), // quién realizó el servicio
+  clienteId: integer("cliente_id").references(() => cliente.id),
+  pacienteDoc: text("paciente_doc"),
+  pacienteNombre: text("paciente_nombre").notNull(),
+  pacienteEdad: integer("paciente_edad"),
+  pacienteSexo: text("paciente_sexo"), // F | M
+  resultados: jsonb("resultados").$type<Record<string, number | string | boolean | null>>(),
+  clasificacion: text("clasificacion"),
+  derivar: boolean("derivar").notNull().default(false), // resultado fuera de rango: recomendar consulta médica
+  receta: jsonb("receta").$type<{ medico: string; cmp: string; fecha: string } | null>(),
+  consentimiento: boolean("consentimiento").notNull().default(false),
+  verificaciones: jsonb("verificaciones").$type<Record<string, boolean>>(), // 5 correctos, alergias, observación post-aplicación…
+  productoOrigen: text("producto_origen"), // INTERNO (de la botica) | EXTERNO (lo trae el paciente)
+  productoId: integer("producto_id").references(() => producto.id),
+  loteId: integer("lote_id").references(() => lote.id),
+  productoTexto: text("producto_texto"),
+  loteTexto: text("lote_texto"),
+  vencimientoProducto: date("vencimiento_producto", { mode: "string" }),
+  dosis: text("dosis"),
+  sitioAplicacion: text("sitio_aplicacion"),
+  observacion: text("observacion"),
+  reaccionAdversa: text("reaccion_adversa"),
+  precio: money("precio").notNull().default(0),
+  medioPago: medioEnum("medio_pago"),
+  sesionId: integer("sesion_id").references(() => sesionCaja.id),
+  movimientoCajaId: integer("movimiento_caja_id"),
+  cobradoEnVenta: boolean("cobrado_en_venta").notNull().default(false), // se cobró como línea de una venta en Vender
+  estado: text("estado").notNull().default("REGISTRADA"), // REGISTRADA | ANULADA
+  anuladaPor: integer("anulada_por").references(() => usuario.id),
+  motivoAnulacion: text("motivo_anulacion"),
+}, (t) => [index("atencion_fecha_idx").on(t.fecha), index("atencion_paciente_idx").on(t.pacienteDoc)]);
+
+/** Servicios cobrados dentro de una venta (p. ej. aplicación de inyectable junto con el medicamento). */
+export const ventaServicio = pgTable("venta_servicio", {
+  id: serial("id").primaryKey(),
+  ventaId: integer("venta_id").notNull().references(() => venta.id),
+  servicioId: integer("servicio_id").notNull().references(() => servicio.id),
+  descripcion: text("descripcion").notNull(),
+  cantidad: integer("cantidad").notNull(),
+  precioUnitario: money("precio_unitario").notNull(),
+  subtotal: money("subtotal").notNull(),
+  tipoIgv: text("tipo_igv").notNull().default("GRAVADO"),
+}, (t) => [index("vs_venta_idx").on(t.ventaId)]);

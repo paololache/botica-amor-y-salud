@@ -15,6 +15,7 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "db:local": "tsx scripts/postgres-local.ts",
+    "importar:productos": "tsx scripts/importar-productos.ts",
     "carga:datos": "SEED_RESET=1 SEED_PRODUCTOS=2000 SEED_DIAS=180 SEED_VENTAS_DIA=150 SEED_CAJAS=5 SEED_PRUEBA_CONCURRENCIA=1 tsx scripts/seed.ts"
   },
   "dependencies": {

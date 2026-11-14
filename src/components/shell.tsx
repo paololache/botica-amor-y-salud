@@ -3,7 +3,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import {
-  UsersRound, Send, LayoutGrid, ScanBarcode, Wallet, ReceiptText, Pill, FlaskConical, Truck, ArrowLeftRight, BookOpenText, BadgePercent, Link2, HandCoins, ChartColumn, Target, LogOut, Menu, PanelLeftClose, PanelLeftOpen, X, ChevronDown,
+  UsersRound, Send, HeartPulse, Contact, LayoutGrid, ScanBarcode, Wallet, ReceiptText, Pill, FlaskConical, Truck, ArrowLeftRight, BookOpenText, BadgePercent, Link2, HandCoins, ChartColumn, Target, LogOut, Menu, PanelLeftClose, PanelLeftOpen, X, ChevronDown,
 } from "lucide-react";
 import type { Rol } from "@/lib/permisos";
 import { MODULOS, ROL_NOMBRE, moduloDeRuta, tieneRol } from "@/lib/permisos";
@@ -15,14 +15,14 @@ const Ctx = createContext<UsuarioUI | null>(null);
 export function useUsuario() { return useContext(Ctx)!; }
 
 export const ICONOS: Record<string, typeof LayoutGrid> = {
-  "/": LayoutGrid, "/vender": ScanBarcode, "/caja": Wallet, "/ventas": ReceiptText, "/productos": Pill, "/compras": Truck, "/movimientos": ArrowLeftRight, "/transferencias": Send,
+  "/": LayoutGrid, "/vender": ScanBarcode, "/caja": Wallet, "/ventas": ReceiptText, "/productos": Pill, "/compras": Truck, "/movimientos": ArrowLeftRight, "/transferencias": Send, "/servicios": HeartPulse, "/clientes": Contact,
   "/laboratorios": FlaskConical, "/kardex": BookOpenText, "/campanas": BadgePercent, "/complementos": Link2, "/comisiones": HandCoins, "/reportes": ChartColumn, "/metas": Target, "/usuarios": UsersRound,
 };
 
 /** Menú agrupado por tarea: atender al cliente, cuidar el stock, promociones y administración. Panel va solo, arriba. */
 const GRUPOS: { titulo: string | null; rutas: string[] }[] = [
   { titulo: null, rutas: ["/"] },
-  { titulo: "Atención", rutas: ["/vender", "/caja", "/ventas", "/transferencias"] },
+  { titulo: "Atención", rutas: ["/vender", "/caja", "/ventas", "/servicios", "/clientes", "/transferencias"] },
   { titulo: "Inventario", rutas: ["/productos", "/compras", "/movimientos", "/kardex", "/laboratorios"] },
   { titulo: "Promociones", rutas: ["/campanas", "/complementos", "/comisiones"] },
   { titulo: "Gestión", rutas: ["/reportes", "/metas", "/usuarios"] },

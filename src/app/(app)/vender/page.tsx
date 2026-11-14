@@ -6,19 +6,33 @@ import { api, useDatos, soles, vence } from "@/lib/cliente";
 import { Boton, Entrada, EntradaNumero, Insignia, Modal, Vacio, useAviso } from "@/components/ui";
 import { useUsuario } from "@/components/shell";
 import { BarraMeta } from "@/components/meta-dia";
-import { mensajeMotivacional } from "@/lib/motivacion";
+import { mensajeMotivacional, type Ritmo } from "@/lib/motivacion";
 import type { MetaDia } from "@/lib/services/metas";
 
 type Pres = { id: number; nombre: string; factor: number; pvp: number; pvpCampana?: number | null };
 /** Precio que se cobra: el de campaña si la presentación lo tiene, si no el de lista. */
 const precioDe = (p?: Pres) => (p ? p.pvpCampana ?? p.pvp : 0);
 type Prod = {
-  id: number; codigo: string; nombre: string; principioActivo: string | null; laboratorio: string | null; condicionVenta: string; ubicacion: string | null;
+  id: number; codigo: string; nombre: string; nombreComercial?: string | null; patologias?: string | null; tipoIgv?: string; principioActivo: string | null; laboratorio: string | null; condicionVenta: string; ubicacion: string | null;
   stockVigente: number; proximoVencimiento: string | null; enPromocion: boolean; campana: { porcentaje: number } | null; presentaciones: Pres[]; presentacionEscaneadaId?: number; mensaje?: string | null;
 };
+type ConsultaCliente = { encontrado: false } | {
+  encontrado: true; cliente: { id: number; numero: string; nombre: string; telefono: string | null; notas: string | null };
+  compras: number; total: number; ultima: string | null; servicios: number; nivel: "NUEVO" | "OCASIONAL" | "FRECUENTE" | "PREFERENTE"; nivelNombre: string; umbralOfertas: number; faltanParaOfertas: number;
+  ofertas: { productoId: number; producto: string; codigo: string; porcentaje: number; fin: string; precio: { presentacion: string; campana: number; lista: number } | null; yaLoCompro: boolean }[];
+  habituales: { productoId: number; nombre: string; veces: number }[];
+};
+const TONO_NIVEL = { NUEVO: "gris", OCASIONAL: "azul", FRECUENTE: "petroleo", PREFERENTE: "amor" } as const;
+type ServicioCat = { id: number; nombre: string; tipo: string; via: string | null; precio: number; precioExterno: number | null; activo: boolean };
+type LineaServicio = { servicio: ServicioCat; cantidad: number; origen: "INTERNO" | "EXTERNO" };
+const IGV_TEXTO: Record<string, string> = { GRAVADO: "Gravado", EXONERADO: "Exonerado", INAFECTO: "Inafecto" };
+const sinTildes = (t: string) => t.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+const precioServicio = (l: LineaServicio) => Number(l.servicio.tipo === "INYECTABLE" && l.origen === "EXTERNO" && l.servicio.precioExterno != null ? l.servicio.precioExterno : l.servicio.precio);
+/** Unidades que trae la presentación «Blíster x10» o «Caja x100» del producto; null si no la tiene. */
+const unidadesDe = (prod: { presentaciones: { nombre: string; factor: number }[] }, prefijo: string) => prod.presentaciones.find((p) => p.factor > 1 && p.nombre.toLowerCase().startsWith(prefijo))?.factor ?? null;
 type Item = { prod: Prod; presId: number; cantidad: number; origen: "DIRECTA" | "SUGERENCIA" };
 type Medio = "EFECTIVO" | "YAPE" | "PLIN" | "TARJETA" | "TRANSFERENCIA";
-type Resultado = { id: number; ref: string; total: number; vuelto: number; cpeEstado: string; comisionVenta: number; comisionHoy: number; comisionMes: number; tipoComprobante: string; subtotal: number; igv: number; meta: MetaDia | null };
+type Resultado = { id: number; ref: string; total: number; vuelto: number; cpeEstado: string; comisionVenta: number; comisionHoy: number; comisionMes: number; tipoComprobante: string; subtotal: number; igv: number; meta: MetaDia | null; ritmo?: Ritmo | null };
 
 const MEDIOS: { v: Medio; t: string }[] = [{ v: "EFECTIVO", t: "Efectivo" }, { v: "YAPE", t: "Yape" }, { v: "PLIN", t: "Plin" }, { v: "TARJETA", t: "Tarjeta" }, { v: "TRANSFERENCIA", t: "Transferencia" }];
 
@@ -46,6 +60,12 @@ export default function Vender() {
   const [tipo, setTipo] = useState<"BOLETA" | "FACTURA" | "NOTA_VENTA">("BOLETA");
   const [cliente, setCliente] = useState({ numero: "", nombre: "" });
   const [conCliente, setConCliente] = useState(false);
+  const [infoCliente, setInfoCliente] = useState<ConsultaCliente | null>(null);
+  // Buscar en todos los campos o solo por nombre/marca, principio activo o patología (para qué sirve).
+  const [campo, setCampo] = useState<"todo" | "nombre" | "principio" | "patologia" | "servicio">("todo");
+  const catalogoServicios = useDatos<ServicioCat[]>("/api/servicios");
+  const [servLineas, setServLineas] = useState<LineaServicio[]>([]);
+  const [conInyectable, setConInyectable] = useState(false);
   const [cobrando, setCobrando] = useState(false);
   const [pagos, setPagos] = useState<{ medio: Medio; monto: string }[]>([{ medio: "EFECTIVO", monto: "" }]);
   const [enviando, setEnviando] = useState(false);
@@ -66,19 +86,36 @@ export default function Vender() {
     return () => window.removeEventListener("botica:buscar-producto", alBuscar);
   }, []);
 
+  // Cliente: al completar el DNI (8) o RUC (11) se consulta quién es, cuántas veces compró y si tiene ofertas.
+  useEffect(() => {
+    const n = cliente.numero;
+    if (n.length !== 8 && n.length !== 11) { setInfoCliente(null); return; }
+    let vigente = true;
+    const h = setTimeout(() => {
+      api<ConsultaCliente>(`/api/clientes/consulta?numero=${n}`).then((r) => {
+        if (!vigente) return;
+        setInfoCliente(r);
+        if (r.encontrado) setCliente((c) => (c.numero === n && !c.nombre.trim() ? { ...c, nombre: r.cliente.nombre } : c));
+      }).catch(() => vigente && setInfoCliente(null));
+    }, 250);
+    return () => { vigente = false; clearTimeout(h); };
+  }, [cliente.numero]);
+
   // Búsqueda con espera corta
   useEffect(() => {
     const t = q.trim();
-    if (!t) { setResultados([]); return; }
+    if (!t || campo === "servicio") { setResultados([]); return; }
     let vigente = true;
     const h = setTimeout(async () => {
       try {
-        const r = await api<Prod[]>(`/api/productos?buscar=${encodeURIComponent(t)}`);
+        const r = await api<Prod[]>(`/api/productos?buscar=${encodeURIComponent(t)}&campo=${campo}&limite=${campo === "todo" ? 12 : 40}`);
         if (vigente) { consulta.current = t; setResultados(r); setActivo(0); }
       } catch { /* sin resultados */ }
     }, 160);
     return () => { vigente = false; clearTimeout(h); };
-  }, [q]);
+  }, [q, campo]);
+  /** Similares: los productos con el mismo principio activo (sustitutos genéricos o de otra marca). */
+  const similares = (pa: string) => { setCampo("principio"); setQ(pa); buscador.current?.focus(); };
 
   // Sugerencias complementarias según el carrito
   const idsCarrito = items.map((i) => i.prod.id).join(",");
@@ -119,22 +156,45 @@ export default function Vender() {
     const p = it.prod.presentaciones.find((x) => x.id === it.presId)!;
     return { ...it, pres: p, subtotal: Math.round(precioDe(p) * it.cantidad * 100) / 100, unidades: it.cantidad * p.factor };
   }), [items]);
-  const total = Math.round(lineas.reduce((s, l) => s + l.subtotal, 0) * 100) / 100;
+  // Servicios en el mismo buscador: con «Servicios» se listan todos; en «Todo», los que coinciden con lo escrito.
+  const serviciosEncontrados = useMemo(() => {
+    const t = sinTildes(q.trim());
+    const lista = (catalogoServicios.datos ?? []).filter((s) => s.activo);
+    if (campo === "servicio") return lista.filter((s) => !t || sinTildes(s.nombre).includes(t));
+    if (campo === "todo" && t.length >= 3) return lista.filter((s) => sinTildes(s.nombre).includes(t));
+    return [];
+  }, [q, campo, catalogoServicios.datos]);
+  const agregarServicio = (s: ServicioCat) => {
+    if (!(Number(s.precio) > 0) && !(Number(s.precioExterno) > 0)) { avisar("error", `${s.nombre} es gratuito: regístralo en Servicios.`); return; }
+    setServLineas((xs) => xs.some((x) => x.servicio.id === s.id) ? xs.map((x) => (x.servicio.id === s.id ? { ...x, cantidad: x.cantidad + 1 } : x)) : [...xs, { servicio: s, cantidad: 1, origen: "INTERNO" }]);
+    setQ(""); setResultados([]); if (campo === "servicio") setCampo("todo");
+    buscador.current?.focus();
+  };
+  const subtotalServicios = Math.round(servLineas.reduce((s, l) => s + precioServicio(l) * l.cantidad, 0) * 100) / 100;
+  const total = Math.round((lineas.reduce((s, l) => s + l.subtotal, 0) + subtotalServicios) * 100) / 100;
+  // Totales por tipo de IGV (como en el comprobante): lo gravado lleva IGV; exonerado e inafecto no.
+  const porTipoIgv = (t: string) => lineas.filter((l) => (l.prod.tipoIgv ?? "GRAVADO") === t).reduce((s, l) => s + l.subtotal, 0);
+  const gravadoConIgv = porTipoIgv("GRAVADO") + subtotalServicios;
+  const opGravada = Math.round((gravadoConIgv / 1.18) * 100) / 100;
+  const igvTotal = Math.round((gravadoConIgv - opGravada) * 100) / 100;
+  const opExonerada = Math.round(porTipoIgv("EXONERADO") * 100) / 100, opInafecta = Math.round(porTipoIgv("INAFECTO") * 100) / 100;
+  const descuentoCampana = Math.round(lineas.reduce((s, l) => s + (l.pres.pvpCampana != null ? (l.pres.pvp - l.pres.pvpCampana) * l.cantidad : 0), 0) * 100) / 100;
+  const hayLineas = lineas.length + servLineas.length > 0;
   const esAdmin = u.roles.includes("ADMIN");
   const requiereDoc = tipo === "FACTURA" || (tipo === "BOLETA" && total > 700);
   const pagado = pagos.reduce((s, p) => s + (Number(p.monto) || 0), 0);
   const vuelto = Math.max(0, Math.round((pagado - total) * 100) / 100);
 
   const nueva = useCallback(() => {
-    setItems([]); setQ(""); setTipo("BOLETA"); setCliente({ numero: "", nombre: "" }); setConCliente(false); setResultado(null); setCobrando(false);
+    setItems([]); setServLineas([]); setQ(""); setTipo("BOLETA"); setCliente({ numero: "", nombre: "" }); setConCliente(false); setInfoCliente(null); setResultado(null); setCobrando(false);
     setErrorCobro(null);
     setTimeout(() => buscador.current?.focus(), 50);
   }, []);
 
   const abrirCobro = useCallback(() => {
-    if (!items.length) return;
+    if (!items.length && !servLineas.length) return;
     setPagos([{ medio: "EFECTIVO", monto: "" }]); setErrorCobro(null); setCobrando(true);
-  }, [items.length]);
+  }, [items.length, servLineas.length]);
 
   const cobrar = async () => {
     setEnviando(true); setErrorCobro(null);
@@ -144,12 +204,14 @@ export default function Vender() {
       if (!pagosOk.length) pagosOk.push({ medio: pagos.length === 1 ? pagos[0].medio : "EFECTIVO", monto: total });
       const r = await api<Resultado>("/api/ventas", { cuerpo: {
         items: items.map((i) => ({ presentacionId: i.presId, cantidad: i.cantidad, descuentoPct: 0, origen: i.origen })),
+        servicios: servLineas.map((l) => ({ servicioId: l.servicio.id, cantidad: l.cantidad, origen: l.servicio.tipo === "INYECTABLE" ? l.origen : undefined })),
         tipoComprobante: tipo, pagos: pagosOk,
         cliente: requiereDoc || cliente.numero.trim() ? { tipoDoc: cliente.numero.length === 11 ? "RUC" : "DNI", numero: cliente.numero, nombre: cliente.nombre || "Cliente" } : undefined,
       } });
-      const m = mensajeMotivacional(r.meta, u.nombre, r.total, ultimoMensaje.current);
+      const m = mensajeMotivacional(r.meta, u.nombre, r.total, ultimoMensaje.current, r.ritmo);
       ultimoMensaje.current = m; setMensaje(m);
       setResultado(r); setCobrando(false);
+      setConInyectable(servLineas.some((l) => l.servicio.tipo === "INYECTABLE"));
       if (r.comisionVenta > 0) avisar("ok", `Ganaste ${soles(r.comisionVenta)} de comisión con esta venta.`);
     } catch (e) {
       setErrorCobro((e as Error).message);
@@ -163,7 +225,7 @@ export default function Vender() {
       else if (e.key === "F3") { e.preventDefault(); buscador.current?.focus(); }
       else if (e.key === "F7") { e.preventDefault(); if (sugerencias[0]) agregar(sugerencias[0], undefined, "SUGERENCIA"); }
       else if (e.key === "F8") { e.preventDefault(); if (cobrando) cobrar(); else abrirCobro(); }
-      else if (e.key === "F9") { e.preventDefault(); const pa = items[items.length - 1]?.prod.principioActivo; if (pa) { setQ(pa); buscador.current?.focus(); } }
+      else if (e.key === "F9") { e.preventDefault(); const pa = items[items.length - 1]?.prod.principioActivo; if (pa) similares(pa); }
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
@@ -200,7 +262,7 @@ export default function Vender() {
       <div className="grid xl:grid-cols-[minmax(0,1fr)_340px] gap-5 items-start">
         <div className="min-w-0 space-y-4">
           <div className="relative">
-            <Search size={20} className="absolute left-4 top-1/2 -translate-y-1/2 text-ink-3" />
+            <Search size={20} className="absolute left-4 top-7 -translate-y-1/2 text-ink-3" />
             <input ref={buscador} autoFocus value={q} onChange={(e) => setQ(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "ArrowDown") { e.preventDefault(); setActivo((a) => Math.min(a + 1, resultados.length - 1)); }
@@ -212,9 +274,31 @@ export default function Vender() {
                 }
                 if (e.key === "Escape") { setQ(""); setResultados([]); }
               }}
-              placeholder="Buscar producto por nombre, código o principio activo"
+              placeholder="Buscar por nombre, marca, principio activo, para qué sirve o código"
               aria-label="Buscar producto" role="combobox" aria-expanded={resultados.length > 0} aria-controls="resultados"
               className="w-full h-14 pl-12 pr-4 rounded-2xl border-2 border-foil-3 bg-papel text-[16px] focus:border-vino-2 focus:outline-none focus:ring-4 focus:ring-rosado/40" />
+            <div className="flex flex-wrap items-center gap-1.5 mt-2" role="radiogroup" aria-label="Buscar por">
+              <span className="text-[12px] text-ink-3 mr-1">Buscar por</span>
+              {([["todo", "Todo"], ["nombre", "Nombre o marca"], ["principio", "Principio activo"], ["patologia", "Patología"], ["servicio", "Servicios"]] as const).map(([v, t]) => (
+                <button key={v} role="radio" aria-checked={campo === v} onClick={() => { setCampo(v); buscador.current?.focus(); }}
+                  className={`h-7 px-3 rounded-full text-[12.5px] font-semibold border ${campo === v ? "bg-petroleo text-white border-petroleo" : "bg-papel border-foil-3 text-ink-2 hover:border-ink-3"}`}>{t}</button>
+              ))}
+            </div>
+            {serviciosEncontrados.length ? (
+              <ul className="aparecer mt-2 tarjeta divide-y divide-foil" aria-label="Servicios">
+                {serviciosEncontrados.map((sv) => (
+                  <li key={sv.id} className="flex items-center gap-3 px-4 py-2.5">
+                    <Insignia tono="petroleo">Servicio</Insignia>
+                    <span className="flex-1 min-w-0 font-semibold text-[14px] truncate">{sv.nombre}</span>
+                    <span className="text-[13px] text-ink-2 tabular-nums">{Number(sv.precio) > 0 ? soles(sv.precio) : "Gratuito"}{sv.precioExterno != null && Number(sv.precioExterno) !== Number(sv.precio) ? ` · externo ${soles(sv.precioExterno)}` : ""}</span>
+                    <Boton tam="sm" variante="borde" disabled={!(Number(sv.precio) > 0) && !(Number(sv.precioExterno) > 0)} onClick={() => agregarServicio(sv)}>Agregar</Boton>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {q.trim() && campo !== "servicio" && consulta.current === q.trim() && !resultados.length && !serviciosEncontrados.length ? (
+              <p className="mt-2 text-[13px] text-ink-2">Sin resultados para «{q.trim()}»{campo !== "todo" ? <> buscando por {campo === "nombre" ? "nombre o marca" : campo === "principio" ? "principio activo" : "patología"}. <button className="font-semibold text-petroleo-3" onClick={() => setCampo("todo")}>Buscar en todo</button></> : "."}</p>
+            ) : null}
             {resultados.length ? (
               <ul id="resultados" role="listbox" className="aparecer absolute z-20 left-0 right-0 mt-2 tarjeta shadow-2xl max-h-[min(560px,65vh)] overflow-y-auto">
                 {resultados.map((r, i) => (
@@ -222,13 +306,15 @@ export default function Vender() {
                     className={`px-4 sm:px-5 py-3.5 ${i ? "border-t border-foil" : ""} ${i === activo ? "bg-foil/60" : ""}`}>
                     <div className="flex items-start justify-between gap-4">
                       <div className="min-w-0 flex-1">
-                        <div className="font-semibold text-[15px] leading-snug">{r.nombre}</div>
-                        <div className="text-[12.5px] text-ink-2 mt-0.5 truncate">{[r.principioActivo, r.laboratorio, r.ubicacion].filter(Boolean).join(" · ") || r.codigo}</div>
+                        <div className="font-semibold text-[15px] leading-snug">{r.nombre}{r.nombreComercial ? <span className="font-normal text-ink-2 text-[13px]"> · {r.nombreComercial}</span> : null}</div>
+                        <div className="text-[12.5px] mt-0.5"><span className="text-ink-3">P. activo:</span> <span className={r.principioActivo ? "text-ink" : "text-ink-3"}>{r.principioActivo ?? "sin dato"}</span><span className="text-ink-3"> · {[r.laboratorio, r.ubicacion && `Ubic. ${r.ubicacion}`].filter(Boolean).join(" · ") || r.codigo}</span></div>
+                        <div className="text-[12.5px] mt-0.5"><span className="text-ink-3">Patología:</span> <span className={r.patologias ? "text-petroleo-3" : "text-ink-3"}>{r.patologias ?? "sin dato"}</span></div>
                         {r.enPromocion ? <div className="flex flex-wrap gap-1.5 mt-1.5"><Insignia tono="amor">En promoción</Insignia></div> : null}
                       </div>
                       <div className="shrink-0 text-right">
                         <div className={`text-[13.5px] font-semibold ${r.stockVigente ? "text-ink" : "text-rojo"}`}>{r.stockVigente ? `${r.stockVigente} und.` : "Sin stock"}</div>
                         {r.proximoVencimiento ? <div className="text-[12px] text-ink-3 mt-0.5">Vence {vence(r.proximoVencimiento)}</div> : null}
+                        {r.principioActivo ? <button onClick={(e) => { e.stopPropagation(); similares(r.principioActivo!); }} className="mt-1.5 h-7 px-2.5 rounded-lg border border-foil-3 text-[12px] font-semibold text-petroleo-3 hover:bg-foil" title="Productos con el mismo principio activo">Similares</button> : null}
                       </div>
                     </div>
                     <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-2 mt-3">
@@ -270,9 +356,12 @@ export default function Vender() {
           ) : null}
 
           <div className="tarjeta overflow-x-auto">
-            {lineas.length ? (
-              <table className="tabla">
-                <thead><tr><th className="min-w-[200px] w-full">Producto</th><th>Presentación</th><th className="num">Cantidad</th><th className="num">Precio</th><th className="num">Subtotal</th><th /></tr></thead>
+            {hayLineas ? (
+              <table className="tabla carrito">
+                <thead><tr>
+                  <th className="min-w-[140px]">Nombre</th><th className="num">P/U</th><th className="num" title="Stock en unidades">Stock</th><th className="num" title="Unidades que trae la caja y el blíster">Und. caja/ blíster</th>
+                  <th>IGV</th><th>Presentación</th><th className="num">Cant.</th><th className="num">Importe</th><th><span className="sr-only">Eliminar</span></th>
+                </tr></thead>
                 <tbody>
                   {lineas.map((l, i) => (
                     <tr key={`${l.prod.id}-${l.presId}`} className="aparecer">
@@ -283,22 +372,47 @@ export default function Vender() {
                           {l.prod.enPromocion ? <Insignia tono="amor">{esAdmin ? "Campaña" : "Comisiona"}</Insignia> : null}
                         </div>
                       </td>
+                      <td className="num whitespace-nowrap"><Precio p={l.pres} /></td>
+                      <td className={`num tabular-nums ${l.unidades > l.prod.stockVigente ? "text-rojo font-semibold" : ""}`}>{l.prod.stockVigente}</td>
+                      <td className="num tabular-nums whitespace-nowrap">{unidadesDe(l.prod, "caja") ?? "—"} / {unidadesDe(l.prod, "blíster") ?? unidadesDe(l.prod, "blister") ?? "—"}</td>
+                      <td className="whitespace-nowrap text-[13px]">{IGV_TEXTO[l.prod.tipoIgv ?? "GRAVADO"] ?? l.prod.tipoIgv}</td>
                       <td>
-                        <select value={l.presId} onChange={(e) => setItems((xs) => xs.map((x, k) => (k === i ? { ...x, presId: Number(e.target.value) } : x)))} className="h-9 rounded-lg border border-foil-3 bg-papel px-2 text-[13.5px]" aria-label="Presentación">
+                        <select value={l.presId} onChange={(e) => setItems((xs) => xs.map((x, k) => (k === i ? { ...x, presId: Number(e.target.value) } : x)))} className="h-8 max-w-[120px] rounded-lg border border-foil-3 bg-papel px-1.5 text-[13px]" aria-label={`Presentación de ${l.prod.nombre}`}>
                           {l.prod.presentaciones.map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
                         </select>
                       </td>
                       <td className="num">
-                        <div className="inline-flex items-center gap-1">
-                          <button className="size-8 grid place-items-center rounded-lg hover:bg-foil" aria-label="Menos" onClick={() => setItems((xs) => xs.map((x, k) => (k === i ? { ...x, cantidad: Math.max(1, x.cantidad - 1) } : x)))}><Minus size={15} /></button>
-                          <EntradaNumero crudo value={l.cantidad} inputMode="numeric" aria-label="Cantidad" onChange={(e) => setItems((xs) => xs.map((x, k) => (k === i ? { ...x, cantidad: Math.max(1, parseInt(e.target.value) || 1) } : x)))} className="w-12 h-8 text-center rounded-lg border border-foil-3 font-semibold" />
-                          <button className="size-8 grid place-items-center rounded-lg hover:bg-foil" aria-label="Más" onClick={() => setItems((xs) => xs.map((x, k) => (k === i ? { ...x, cantidad: x.cantidad + 1 } : x)))}><Plus size={15} /></button>
+                        <div className="inline-flex items-center gap-0.5">
+                          <button className="size-7 grid place-items-center rounded-lg hover:bg-foil" aria-label="Menos" onClick={() => setItems((xs) => xs.map((x, k) => (k === i ? { ...x, cantidad: Math.max(1, x.cantidad - 1) } : x)))}><Minus size={15} /></button>
+                          <EntradaNumero crudo value={l.cantidad} inputMode="numeric" aria-label={`Cantidad de ${l.prod.nombre}`} onChange={(e) => setItems((xs) => xs.map((x, k) => (k === i ? { ...x, cantidad: Math.max(1, parseInt(e.target.value) || 1) } : x)))} className="w-10 h-8 text-center rounded-lg border border-foil-3 font-semibold" />
+                          <button className="size-7 grid place-items-center rounded-lg hover:bg-foil" aria-label="Más" onClick={() => setItems((xs) => xs.map((x, k) => (k === i ? { ...x, cantidad: x.cantidad + 1 } : x)))}><Plus size={15} /></button>
                         </div>
                         {l.unidades > l.prod.stockVigente ? <div className="text-[11.5px] text-rojo mt-1">Solo hay {l.prod.stockVigente} und.</div> : null}
                       </td>
-                      <td className="num whitespace-nowrap"><Precio p={l.pres} /></td>
-                      <td className="num font-semibold">{soles(l.subtotal)}</td>
-                      <td><button onClick={() => setItems((xs) => xs.filter((_, k) => k !== i))} className="size-8 grid place-items-center rounded-lg text-ink-3 hover:text-rojo hover:bg-rojo-claro" aria-label="Quitar"><Trash size={15} /></button></td>
+                      <td className="num font-semibold whitespace-nowrap">{soles(l.subtotal)}</td>
+                      <td><button onClick={() => setItems((xs) => xs.filter((_, k) => k !== i))} className="size-8 grid place-items-center rounded-lg text-ink-3 hover:text-rojo hover:bg-rojo-claro" aria-label={`Quitar ${l.prod.nombre}`}><Trash size={15} /></button></td>
+                    </tr>
+                  ))}
+                  {servLineas.map((l, i) => (
+                    <tr key={`s${l.servicio.id}`} className="aparecer bg-[#f6fbfa]">
+                      <td><div className="font-semibold">{l.servicio.nombre}</div><Insignia tono="petroleo" className="mt-1">Servicio</Insignia></td>
+                      <td className="num whitespace-nowrap">{soles(precioServicio(l))}</td>
+                      <td className="num text-ink-3">—</td><td className="num text-ink-3">—</td>
+                      <td className="text-[13px]">Gravado</td>
+                      <td>{l.servicio.tipo === "INYECTABLE" ? (
+                        <select value={l.origen} onChange={(e) => setServLineas((xs) => xs.map((x, k) => (k === i ? { ...x, origen: e.target.value as "INTERNO" | "EXTERNO" } : x)))} className="h-8 max-w-[130px] rounded-lg border border-foil-3 bg-papel px-1.5 text-[13px]" aria-label={`Medicamento de ${l.servicio.nombre}`}>
+                          <option value="INTERNO">Med. de la botica</option><option value="EXTERNO">Med. externo</option>
+                        </select>
+                      ) : <span className="text-[13px] text-ink-2">Servicio</span>}</td>
+                      <td className="num">
+                        <div className="inline-flex items-center gap-0.5">
+                          <button className="size-7 grid place-items-center rounded-lg hover:bg-foil" aria-label="Menos" onClick={() => setServLineas((xs) => xs.map((x, k) => (k === i ? { ...x, cantidad: Math.max(1, x.cantidad - 1) } : x)))}><Minus size={15} /></button>
+                          <span className="w-10 text-center font-semibold tabular-nums">{l.cantidad}</span>
+                          <button className="size-7 grid place-items-center rounded-lg hover:bg-foil" aria-label="Más" onClick={() => setServLineas((xs) => xs.map((x, k) => (k === i ? { ...x, cantidad: Math.min(20, x.cantidad + 1) } : x)))}><Plus size={15} /></button>
+                        </div>
+                      </td>
+                      <td className="num font-semibold whitespace-nowrap">{soles(precioServicio(l) * l.cantidad)}</td>
+                      <td><button onClick={() => setServLineas((xs) => xs.filter((_, k) => k !== i))} className="size-8 grid place-items-center rounded-lg text-ink-3 hover:text-rojo hover:bg-rojo-claro" aria-label={`Quitar ${l.servicio.nombre}`}><Trash size={15} /></button></td>
                     </tr>
                   ))}
                 </tbody>
@@ -314,6 +428,26 @@ export default function Vender() {
         </div>
 
         <aside className="space-y-4 xl:sticky xl:top-6">
+          {infoCliente?.encontrado && infoCliente.nivel === "PREFERENTE" ? (
+            <section className="rounded-[18px] border border-amor/30 bg-[linear-gradient(170deg,#fff6f9,#fff)] p-4 aparecer" aria-labelledby="t-ofertas">
+              <h2 id="t-ofertas" className="flex items-center gap-2 font-display font-semibold text-[14.5px] text-amor-2"><Sparkles size={16} /> Ofrécele a {infoCliente.cliente.nombre.split(" ")[0]}</h2>
+              <p className="text-[12.5px] text-ink-2 mt-0.5">Cliente preferente ({infoCliente.compras} compras). Primero, los productos en promoción:</p>
+              {infoCliente.ofertas.length ? (
+                <ul className="mt-2.5 space-y-2">
+                  {infoCliente.ofertas.map((o) => (
+                    <li key={o.productoId} className="flex items-center gap-3 rounded-xl bg-papel border border-foil-2 px-3 py-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="font-semibold text-[13.5px] truncate">{o.producto}</div>
+                        <div className="text-[12px] text-ink-3">{o.precio ? <>{o.precio.presentacion} a <b className="text-amor-2">{soles(o.precio.campana)}</b> <s>{soles(o.precio.lista)}</s></> : "En promoción"}{o.yaLoCompro ? " · ya lo compró" : ""}</div>
+                      </div>
+                      <Boton tam="sm" variante="borde" onClick={() => window.dispatchEvent(new CustomEvent("botica:buscar-producto", { detail: o.codigo || o.producto }))}>Ofrecer</Boton>
+                    </li>
+                  ))}
+                </ul>
+              ) : <p className="text-[12.5px] text-ink-3 mt-2">No hay productos en promoción vigentes.</p>}
+              {infoCliente.habituales.length ? <p className="text-[12px] text-ink-2 mt-3">Suele llevar: {infoCliente.habituales.map((h) => h.nombre).join(", ")}.</p> : null}
+            </section>
+          ) : null}
           {sugerencias.length ? (
             <section className="rounded-[18px] border border-amor/25 bg-[linear-gradient(170deg,#fff6f9,#fff)] p-4 aparecer" aria-labelledby="t-sug">
               <h2 id="t-sug" className="flex items-center gap-2 font-display font-semibold text-[14.5px] text-amor-2"><Sparkles size={16} /> Complementa la compra</h2>
@@ -345,16 +479,30 @@ export default function Vender() {
             ) : (
               <button className="mt-3 text-[13px] text-petroleo-3 font-semibold" onClick={() => setConCliente(true)}>+ Agregar DNI del cliente</button>
             )}
+            {infoCliente?.encontrado ? (
+              <div className="mt-2 rounded-xl bg-foil px-3 py-2 text-[12.5px]" aria-live="polite">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Insignia tono={TONO_NIVEL[infoCliente.nivel]}>{infoCliente.nivelNombre}</Insignia>
+                  <span className="text-ink-2">{infoCliente.compras} {infoCliente.compras === 1 ? "compra" : "compras"}{infoCliente.ultima ? ` · última ${new Date(infoCliente.ultima).toLocaleDateString("es-PE", { day: "2-digit", month: "short" })}` : ""}</span>
+                </div>
+                {infoCliente.cliente.notas ? <p className="mt-1 text-[#8a5b00]">Nota: {infoCliente.cliente.notas}</p> : null}
+                {infoCliente.nivel !== "PREFERENTE" && infoCliente.faltanParaOfertas <= 3 ? <p className="mt-1 text-ink-3">Le {infoCliente.faltanParaOfertas === 1 ? "falta 1 compra" : `faltan ${infoCliente.faltanParaOfertas} compras`} para recibir ofertas.</p> : null}
+              </div>
+            ) : infoCliente && !infoCliente.encontrado && conCliente ? <p className="mt-1.5 text-[12px] text-ink-3">Cliente nuevo: se registra con esta venta.</p> : null}
             {requiereDoc ? <p className="text-[12px] text-ink-3 mt-1.5">{tipo === "FACTURA" ? "La factura exige RUC de 11 dígitos." : "Boleta mayor a S/ 700: se requiere DNI."}</p> : null}
             <div className="mt-5 pt-4 border-t border-foil space-y-1.5 text-[13.5px]">
-              <div className="flex justify-between text-ink-2"><span>Op. gravada</span><span>{soles(total / 1.18)}</span></div>
-              <div className="flex justify-between text-ink-2"><span>IGV 18%</span><span>{soles(total - total / 1.18)}</span></div>
+              <div className="flex justify-between text-ink-2"><span>Op. gravada</span><span className="tabular-nums">{soles(opGravada)}</span></div>
+              {opExonerada > 0 ? <div className="flex justify-between text-ink-2"><span>Op. exonerada</span><span className="tabular-nums">{soles(opExonerada)}</span></div> : null}
+              {opInafecta > 0 ? <div className="flex justify-between text-ink-2"><span>Op. inafecta</span><span className="tabular-nums">{soles(opInafecta)}</span></div> : null}
+              <div className="flex justify-between text-ink-2"><span>IGV 18%</span><span className="tabular-nums">{soles(igvTotal)}</span></div>
+              {descuentoCampana > 0 ? <div className="flex justify-between text-amor-2"><span>Ahorro por campaña</span><span className="tabular-nums">{soles(descuentoCampana)}</span></div> : null}
+              {servLineas.length ? <div className="flex justify-between text-ink-2"><span>Servicios incluidos</span><span className="tabular-nums">{soles(subtotalServicios)}</span></div> : null}
             </div>
             <div className="flex items-end justify-between mt-3">
               <span className="font-semibold text-ink-2">Total</span>
               <span className="cifra text-[40px] leading-none">{soles(total)}</span>
             </div>
-            <Boton variante="amor" tam="lg" className="w-full mt-5" disabled={!items.length} onClick={abrirCobro}>Cobrar <Tecla k="F8" /></Boton>
+            <Boton variante="amor" tam="lg" className="w-full mt-5" disabled={!hayLineas} onClick={abrirCobro}>Cobrar <Tecla k="F8" /></Boton>
           </section>
         </aside>
       </div>
@@ -403,6 +551,11 @@ export default function Vender() {
               <p className="cifra text-[42px] mt-3">{soles(resultado.total)}</p>
               <p className="text-ink-2 text-sm">Vuelto: <b>{soles(resultado.vuelto)}</b></p>
             </div>
+            {conInyectable ? (
+              <div className="mt-4 rounded-2xl bg-ambar-claro px-4 py-3 text-[13.5px] text-[#8a5b00]">
+                Incluye un inyectable: registra la atención (receta, 5 correctos y consentimiento) en <a href="/servicios" className="font-semibold underline">Servicios</a> marcando «Ya se cobró en Vender».
+              </div>
+            ) : null}
             {mensaje ? (
               <div className="mt-4 rounded-2xl bg-[linear-gradient(160deg,#fff6f9,#fff)] border border-amor/20 px-4 py-3.5" aria-live="polite">
                 <p className="font-display font-semibold text-[15px] text-amor-2 leading-snug">{mensaje}</p>

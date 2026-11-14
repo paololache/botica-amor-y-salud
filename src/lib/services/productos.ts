@@ -1,8 +1,9 @@
-import { and, asc, eq, gt, ilike, inArray, ne, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, ilike, inArray, ne, or, sql, type AnyColumn, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { fecha, monto, montoOCero } from "../validacion";
 import { schema, type Db } from "@/db";
 import type { Sesion } from "../auth";
+import { sugerirPatologias } from "../terapeutica";
 import { ErrorNegocio, hoy as hoyLima, r2, r4, sumarDias } from "../util";
 import { filas } from "../sqlrows";
 import { estadoEfectivo, preciosCampana } from "./campanas";
@@ -30,16 +31,36 @@ async function campanasDe(db: Db, ids: number[], hoy: string) {
 }
 
 /** Búsqueda del punto de venta: código exacto (del producto o de una presentación), nombre o principio activo. */
-export async function buscarProductos(db: Db, q: string, limite = 12) {
+export type CampoBusqueda = "todo" | "nombre" | "principio" | "patologia";
+
+/** Texto en minúsculas y sin tildes, en SQL y en JS, para que «analgesico» encuentre «analgésico». */
+const sinTildes = (c: AnyColumn | SQL) => sql`translate(lower(coalesce(${c}, '')), 'áéíóúüñàèìòù', 'aeiouunaeiou')`;
+export const textoBusqueda = (t: string) => t.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[%_]/g, "").replace(/\s+/g, " ").trim();
+
+/** Condición de búsqueda por campo: nombre (y marca), principio activo, patología o todos (incluye código). */
+function condicionBusqueda(t: string, campo: CampoBusqueda) {
+  const patron = `%${textoBusqueda(t)}%`;
+  const nombre = or(sql`${sinTildes(producto.nombre)} like ${patron}`, sql`${sinTildes(producto.nombreComercial)} like ${patron}`)!;
+  const principio = sql`${sinTildes(producto.principioActivo)} like ${patron}`;
+  const patologia = sql`${sinTildes(producto.patologias)} like ${patron}`;
+  if (campo === "nombre") return nombre;
+  if (campo === "principio") return principio;
+  if (campo === "patologia") return patologia;
+  return or(nombre, principio, patologia)!;
+}
+
+export async function buscarProductos(db: Db, q: string, limite = 12, campo: CampoBusqueda = "todo") {
   const hoy = hoyLima();
   const t = q.trim();
   if (!t) return [];
-  const patron = `%${t.replace(/[%_]/g, "")}%`;
-  const [escaneada] = await db.select({ id: presentacion.id, productoId: presentacion.productoId }).from(presentacion).where(and(eq(presentacion.codigo, t), eq(presentacion.activo, true)));
-  const porCodigo = or(eq(producto.codigo, t), escaneada ? eq(producto.id, escaneada.productoId) : undefined);
+  const n = textoBusqueda(t);
+  const [escaneada] = campo === "todo" ? await db.select({ id: presentacion.id, productoId: presentacion.productoId }).from(presentacion).where(and(eq(presentacion.codigo, t), eq(presentacion.activo, true))) : [];
+  const porCodigo = campo === "todo" ? or(eq(producto.codigo, t), escaneada ? eq(producto.id, escaneada.productoId) : undefined) : undefined;
   const prods = await db.select().from(producto)
-    .where(and(eq(producto.activo, true), or(porCodigo, ilike(producto.nombre, patron), ilike(producto.principioActivo, patron))))
-    .orderBy(sql`case when ${porCodigo} then 0 when ${producto.nombre} ilike ${t + "%"} then 1 else 2 end`, asc(producto.nombre))
+    // Por código, nombre, nombre comercial (marca), principio activo o patología (para qué sirve), sin importar tildes.
+    .where(and(eq(producto.activo, true), or(porCodigo, condicionBusqueda(t, campo))))
+    // Por patología o principio activo se listan primero los que más stock tienen (como para ofrecer el que hay).
+    .orderBy(...(campo === "patologia" || campo === "principio" ? [sql`(select coalesce(sum(l.cantidad), 0) from lote l where l.producto_id = ${producto.id} and l.estado = 'ACTIVO' and l.vencimiento > ${hoy}) desc`] : []), sql`case when ${porCodigo ?? sql`false`} then 0 when ${sinTildes(producto.nombre)} like ${n + "%"} or ${sinTildes(producto.nombreComercial)} like ${n + "%"} then 1 when ${sinTildes(producto.nombre)} like ${"%" + n + "%"} then 2 when ${sinTildes(producto.principioActivo)} like ${"%" + n + "%"} then 3 else 4 end`, asc(producto.nombre))
     .limit(limite);
   const lista = await enriquecer(db, prods, hoy);
   return lista.map((p) => ({ ...p, presentacionEscaneadaId: p.id === escaneada?.productoId ? escaneada.id : undefined }));
@@ -56,9 +77,9 @@ async function enriquecer(db: Db, prods: (typeof producto.$inferSelect)[], hoy: 
   return prods.map((p) => {
     const c = camps.get(p.id);
     return {
-      id: p.id, codigo: p.codigo, nombre: p.nombre, principioActivo: p.principioActivo, concentracion: p.concentracion, formaFarmaceutica: p.formaFarmaceutica,
+      id: p.id, codigo: p.codigo, nombre: p.nombre, nombreComercial: p.nombreComercial, principioActivo: p.principioActivo, patologias: p.patologias, concentracion: p.concentracion, formaFarmaceutica: p.formaFarmaceutica,
       registroSanitario: p.registroSanitario, registroVence: p.registroVence, laboratorioId: p.laboratorioId, laboratorio: p.laboratorioId ? labs.get(p.laboratorioId) ?? null : null,
-      condicionVenta: p.condicionVenta, ubicacion: p.ubicacion, stockMinimo: p.stockMinimo, costoPromedio: p.costoPromedio, porcentajeUtilidad: p.porcentajeUtilidad,
+      condicionVenta: p.condicionVenta, tipoIgv: p.tipoIgv, ubicacion: p.ubicacion, stockMinimo: p.stockMinimo, costoPromedio: p.costoPromedio, porcentajeUtilidad: p.porcentajeUtilidad,
       stock: st.get(p.id)?.stock ?? 0, stockVigente: st.get(p.id)?.vigente ?? 0, proximoVencimiento: st.get(p.id)?.proxVenc ?? null,
       enPromocion: c?.estado === "ACTIVA", campana: c ?? null,
       presentaciones: pres.filter((x) => x.productoId === p.id).map((x) => ({ id: x.id, nombre: x.nombre, factor: x.factor, pvp: x.pvp, codigo: x.codigo, pvpCampana: enCampana.get(x.id) ?? null })),
@@ -66,13 +87,14 @@ async function enriquecer(db: Db, prods: (typeof producto.$inferSelect)[], hoy: 
   });
 }
 
-export async function listarStock(db: Db, opciones: { q?: string; categoriaId?: number; filtro?: string; pagina?: number }) {
+export async function listarStock(db: Db, opciones: { q?: string; categoriaId?: number; filtro?: string; pagina?: number; campo?: CampoBusqueda }) {
   const hoy = hoyLima();
   const cond = [eq(producto.activo, true)];
   if (opciones.q) {
     const t = opciones.q.trim();
     const patron = `%${t}%`;
-    cond.push(or(eq(producto.codigo, t), sql`exists (select 1 from presentacion pr where pr.producto_id = ${producto.id} and pr.codigo = ${t} and pr.activo)`, ilike(producto.nombre, patron), ilike(producto.principioActivo, patron), sql`exists (select 1 from laboratorio lb where lb.id = ${producto.laboratorioId} and lb.nombre ilike ${patron})`)!);
+    const campo = opciones.campo ?? "todo";
+    cond.push(campo !== "todo" ? condicionBusqueda(t, campo) : or(eq(producto.codigo, t), sql`exists (select 1 from presentacion pr where pr.producto_id = ${producto.id} and pr.codigo = ${t} and pr.activo)`, condicionBusqueda(t, "todo"), sql`exists (select 1 from laboratorio lb where lb.id = ${producto.laboratorioId} and lb.nombre ilike ${patron})`)!);
   }
   if (opciones.categoriaId) cond.push(eq(producto.categoriaId, opciones.categoriaId));
   if (opciones.filtro === "promocion") cond.push(sql`exists (select 1 from campana c where c.producto_id = ${producto.id} and c.fin >= ${hoy} and (c.estado = 'ACTIVA' or (c.estado = 'PROGRAMADA' and c.inicio <= ${hoy})))`);
@@ -110,7 +132,10 @@ export const esquemaProducto = z.object({
   codigo: codigoBarras,
   nombre: z.string().trim().min(3, "mínimo 3 caracteres").max(120),
   laboratorioId: z.number({ message: "elige un laboratorio del catálogo" }).int(),
+  nombreComercial: z.string().trim().max(80).nullable().optional(),
   principioActivo: z.string().trim().nullable().optional(),
+  /** Para qué se usa, separado por comas: se puede buscar por ahí (p. ej. «fiebre, dolor de cabeza»). */
+  patologias: z.string().trim().max(300).nullable().optional(),
   concentracion: z.string().trim().nullable().optional(),
   formaFarmaceutica: z.string().trim().nullable().optional(),
   registroSanitario: z.string().trim().nullable().optional(),
@@ -119,6 +144,7 @@ export const esquemaProducto = z.object({
   confirmarDuplicado: z.boolean().optional(),
   categoriaId: z.number().int().nullable().optional(),
   condicionVenta: z.enum(["LIBRE", "RECETA", "RECETA_RETENIDA"]).default("LIBRE"),
+  tipoIgv: z.enum(["GRAVADO", "EXONERADO", "INAFECTO"]).default("GRAVADO"),
   stockMinimo: z.number().int().min(0).default(0),
   costoUnitario: montoOCero,
   precioUnidad: monto.refine((n) => n > 0, "el precio debe ser mayor a 0"),
@@ -161,10 +187,17 @@ async function avisarDuplicado(db: Db, d: EntradaProducto, excepto?: number) {
   if (otro) throw new ErrorNegocio("POSIBLE_DUPLICADO", `Ya existe «${d.nombre}» de ${lab.nombre} con el código ${otro.codigo}. Confirma si es un producto distinto.`, 422);
 }
 
+/** «Fiebre;  dolor de cabeza,gripe» → «fiebre, dolor de cabeza, gripe» (sin repetidos). */
+export function normalizarPatologias(t?: string | null) {
+  const lista = [...new Set((t ?? "").split(/[,;\n]+/).map((x) => x.trim().toLowerCase()).filter(Boolean))];
+  return lista.length ? lista.join(", ") : null;
+}
+
 const datosProducto = (d: EntradaProducto) => ({
   codigo: d.codigo, nombre: d.nombre, laboratorioId: d.laboratorioId, principioActivo: d.principioActivo || null, concentracion: d.concentracion || null,
+  nombreComercial: d.nombreComercial || null, patologias: normalizarPatologias(d.patologias),
   formaFarmaceutica: d.formaFarmaceutica || null, registroSanitario: d.registroSanitario || null, registroVence: d.registroVence || null,
-  categoriaId: d.categoriaId ?? null, condicionVenta: d.condicionVenta, stockMinimo: d.stockMinimo, porcentajeUtilidad: d.porcentajeUtilidad,
+  categoriaId: d.categoriaId ?? null, condicionVenta: d.condicionVenta, tipoIgv: d.tipoIgv, stockMinimo: d.stockMinimo, porcentajeUtilidad: d.porcentajeUtilidad,
 });
 
 /** El producto nace con stock 0: las unidades entran por Compras, con lote y vencimiento, para que el kardex cuadre. */
@@ -255,3 +288,20 @@ export async function listarComplementos(db: Db) {
 }
 
 export { gt };
+
+/**
+ * Completa la patología (acción terapéutica y para qué sirve) de los productos que no la tienen, a partir del
+ * principio activo o del nombre (diccionario de referencia). No toca lo que ya escribió el QF.
+ */
+export async function completarPatologias(db: Db, user: Sesion, opciones: { simular?: boolean } = {}) {
+  const sin = await db.select({ id: producto.id, nombre: producto.nombre, principioActivo: producto.principioActivo }).from(producto)
+    .where(sql`coalesce(trim(${producto.patologias}), '') = ''`);
+  const cambios = sin.map((p) => ({ ...p, patologias: sugerirPatologias(p.principioActivo, p.nombre) })).filter((p): p is typeof p & { patologias: string } => !!p.patologias);
+  if (!opciones.simular && cambios.length) {
+    await db.transaction(async (tx) => {
+      for (const c of cambios) await tx.update(producto).set({ patologias: c.patologias }).where(eq(producto.id, c.id));
+      await tx.insert(auditoria).values({ usuarioId: user.id, accion: "COMPLETAR_PATOLOGIAS", entidad: "producto", entidadId: null, detalle: { productos: cambios.length } });
+    });
+  }
+  return { sinPatologia: sin.length, completados: opciones.simular ? 0 : cambios.length, posibles: cambios.length, ejemplos: cambios.slice(0, 5).map((c) => ({ nombre: c.nombre, patologias: c.patologias })) };
+}

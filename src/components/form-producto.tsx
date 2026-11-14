@@ -6,8 +6,8 @@ import { Boton, Campo, Entrada, EntradaNumero, Modal, Selector, useAviso } from 
 import { SelectorLaboratorio, type Laboratorio } from "@/components/selector-laboratorio";
 
 export type ProductoEditable = {
-  id: number; codigo: string; nombre: string; principioActivo: string | null; concentracion: string | null; formaFarmaceutica: string | null; registroSanitario: string | null; registroVence: string | null;
-  laboratorioId: number | null; laboratorio: string | null; categoriaId: number | null; condicionVenta: string; stockMinimo: number; costoPromedio?: number; porcentajeUtilidad?: number; tieneKardex: boolean;
+  id: number; codigo: string; nombre: string; nombreComercial?: string | null; patologias?: string | null; principioActivo: string | null; concentracion: string | null; formaFarmaceutica: string | null; registroSanitario: string | null; registroVence: string | null;
+  laboratorioId: number | null; laboratorio: string | null; categoriaId: number | null; condicionVenta: string; tipoIgv?: string; stockMinimo: number; costoPromedio?: number; porcentajeUtilidad?: number; tieneKardex: boolean;
   presentaciones: { nombre: string; factor: number; pvp: number; codigo: string | null }[];
 };
 
@@ -25,9 +25,9 @@ export function FormProducto({ producto: p, categorias, laboratorios, alCerrar, 
   const b0 = p?.presentaciones.find((x) => x.nombre.startsWith("Blíster"));
   const c0 = p?.presentaciones.find((x) => x.nombre.startsWith("Caja"));
   const [f, setF] = useState({
-    codigo: p?.codigo ?? "", nombre: p?.nombre ?? "", principioActivo: p?.principioActivo ?? "",
+    codigo: p?.codigo ?? "", nombre: p?.nombre ?? "", principioActivo: p?.principioActivo ?? "", nombreComercial: p?.nombreComercial ?? "", patologias: p?.patologias ?? "",
     concentracion: p?.concentracion ?? "", formaFarmaceutica: p?.formaFarmaceutica ?? "", registroSanitario: p?.registroSanitario ?? "", registroVence: p?.registroVence ?? "",
-    categoriaId: p?.categoriaId ? String(p.categoriaId) : "", condicionVenta: p?.condicionVenta ?? "LIBRE", stockMinimo: String(p?.stockMinimo ?? 0),
+    categoriaId: p?.categoriaId ? String(p.categoriaId) : "", condicionVenta: p?.condicionVenta ?? "LIBRE", tipoIgv: p?.tipoIgv ?? "GRAVADO", stockMinimo: String(p?.stockMinimo ?? 0),
     costo: p?.costoPromedio !== undefined ? String(p.costoPromedio) : "", utilidad: String(p?.porcentajeUtilidad ?? 30), pvp: p ? String(p.presentaciones.find((x) => x.factor === 1)?.pvp ?? "") : "",
     bFactor: b0 ? String(b0.factor) : "", bPvp: b0 ? String(b0.pvp) : "", bCodigo: b0?.codigo ?? "", cFactor: c0 ? String(c0.factor) : "", cPvp: c0 ? String(c0.pvp) : "", cCodigo: c0?.codigo ?? "",
   });
@@ -59,9 +59,9 @@ export function FormProducto({ producto: p, categorias, laboratorios, alCerrar, 
     const empaque = (factor: string, precio: string, codigo: string) => (factor.trim() || precio.trim() || codigo ? { factor: num(factor), pvp: num(precio), codigo: codigo || null } : null);
     try {
       const cuerpo = {
-        codigo: f.codigo, nombre: f.nombre, laboratorioId: lab?.id, principioActivo: f.principioActivo || null, concentracion: f.concentracion || null, formaFarmaceutica: f.formaFarmaceutica || null,
+        codigo: f.codigo, nombre: f.nombre, laboratorioId: lab?.id, principioActivo: f.principioActivo || null, nombreComercial: f.nombreComercial || null, patologias: f.patologias || null, concentracion: f.concentracion || null, formaFarmaceutica: f.formaFarmaceutica || null,
         registroSanitario: f.registroSanitario || null, registroVence: f.registroVence || null, categoriaId: f.categoriaId ? Number(f.categoriaId) : null,
-        condicionVenta: f.condicionVenta, stockMinimo: Math.trunc(num(f.stockMinimo)), costoUnitario: costo, porcentajeUtilidad: num(f.utilidad), precioUnidad: num(pvp),
+        condicionVenta: f.condicionVenta, tipoIgv: f.tipoIgv, stockMinimo: Math.trunc(num(f.stockMinimo)), costoUnitario: costo, porcentajeUtilidad: num(f.utilidad), precioUnidad: num(pvp),
         blister: empaque(f.bFactor, bPvp, f.bCodigo), caja: empaque(f.cFactor, cPvp, f.cCodigo), confirmarDuplicado,
       };
       if (p) await api(`/api/productos/${p.id}`, { metodo: "PATCH", cuerpo });
@@ -78,12 +78,17 @@ export function FormProducto({ producto: p, categorias, laboratorios, alCerrar, 
           <Campo etiqueta="Código de barras" ayuda="Al escanearlo se vende por unidad"><Entrada autoFocus value={f.codigo} onChange={(e) => cambiar("codigo", e.target.value.trim())} placeholder="7750000000011" /></Campo>
           <SelectorLaboratorio laboratorios={catalogo} valor={lab} alElegir={elegirLab} />
           <Campo etiqueta="Nombre del producto" className="sm:col-span-2"><Entrada value={f.nombre} onChange={(e) => { setConfirmarDuplicado(false); setError(null); cambiar("nombre", e.target.value); }} placeholder="Dolofenex Forte cápsula" /></Campo>
-          <Campo etiqueta="Principio activo (opcional)" ayuda="Permite buscar sustitutos con F9 en Vender"><Entrada value={f.principioActivo} onChange={(e) => cambiar("principioActivo", e.target.value)} /></Campo>
+          <Campo etiqueta="Nombre comercial o marca (opcional)" ayuda="Como lo pide el cliente; se puede buscar por aquí"><Entrada value={f.nombreComercial} onChange={(e) => cambiar("nombreComercial", e.target.value)} placeholder="Panadol" /></Campo>
+          <Campo etiqueta="Principio activo (opcional)" ayuda="Permite buscar sustitutos con F9 en Vender"><Entrada value={f.principioActivo} onChange={(e) => cambiar("principioActivo", e.target.value)} placeholder="Paracetamol" /></Campo>
+          <Campo etiqueta="Patologías: para qué sirve (opcional)" ayuda="Separadas por coma. En Vender se puede buscar «fiebre» o «gastritis»" className="sm:col-span-2">
+            <Entrada value={f.patologias} onChange={(e) => cambiar("patologias", e.target.value)} placeholder="fiebre, dolor de cabeza, dolor muscular" maxLength={300} />
+          </Campo>
           <Campo etiqueta="Concentración (opcional)"><Entrada value={f.concentracion} onChange={(e) => cambiar("concentracion", e.target.value)} placeholder="500 mg" /></Campo>
           <Campo etiqueta="Forma farmacéutica (opcional)"><Selector value={f.formaFarmaceutica} onChange={(e) => cambiar("formaFarmaceutica", e.target.value)}><option value="">Sin especificar</option>{FORMAS.map((x) => <option key={x} value={x}>{x}</option>)}</Selector></Campo>
           <Campo etiqueta="Registro sanitario (opcional)"><Entrada value={f.registroSanitario} onChange={(e) => cambiar("registroSanitario", e.target.value)} placeholder="EE-01234" /></Campo>
           <Campo etiqueta="Vencimiento del registro (opcional)"><Entrada type="date" value={f.registroVence} onChange={(e) => cambiar("registroVence", e.target.value)} /></Campo>
           <Campo etiqueta="Categoría (opcional)"><Selector value={f.categoriaId} onChange={(e) => cambiar("categoriaId", e.target.value)}><option value="">Sin categoría</option>{categorias.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}</Selector></Campo>
+          <Campo etiqueta="Tipo de IGV" ayuda="Casi todo es gravado (18 %). Cámbialo solo si el contador lo indica"><Selector value={f.tipoIgv} onChange={(e) => cambiar("tipoIgv", e.target.value)}><option value="GRAVADO">Gravado (con IGV)</option><option value="EXONERADO">Exonerado</option><option value="INAFECTO">Inafecto</option></Selector></Campo>
           <Campo etiqueta="Stock mínimo (unidades)"><EntradaNumero inputMode="numeric" value={f.stockMinimo} onChange={(e) => cambiar("stockMinimo", e.target.value.replace(/\D/g, ""))} /></Campo>
         </div>
         <fieldset className="rounded-2xl border border-foil-2 p-4">

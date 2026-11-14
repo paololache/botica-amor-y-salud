@@ -7,11 +7,12 @@ import { importeEnLetras } from "@/lib/letras";
 
 type Detalle = {
   venta: {
-    id: number; serie: string; numero: number; fecha: string; tipoComprobante: "BOLETA" | "FACTURA" | "NOTA_VENTA"; subtotal: number; igv: number; descuento: number; total: number; delivery: number;
+    id: number; serie: string; numero: number; fecha: string; tipoComprobante: "BOLETA" | "FACTURA" | "NOTA_VENTA"; subtotal: number; igv: number; descuento: number; total: number; delivery: number; exonerada: number; inafecta: number;
     estado: string; cpeEstado: string; receta: { medico: string; cmp: string; numero: string } | null;
   };
   items: { producto: string; presentacion: string; lote: string; vencimiento: string; registroSanitario: string | null; cantidad: number; precio: number; subtotal: number }[];
   pagos: { medio: string; monto: number }[];
+  servicios?: { descripcion: string; cantidad: number; precio: number; subtotal: number }[];
   cliente: { tipoDoc: string; numero: string; nombre: string } | null;
   vendedor: string | null;
   empresa: { razonSocial: string; nombreComercial: string; ruc: string; direccion: string; telefono: string };
@@ -122,6 +123,9 @@ function Ticket({ d, lineas }: { d: Detalle; lineas: Lineas }) {
               <td className="pt-1.5 text-right tabular-nums">{m2(l.importe)}</td>
             </tr>
           ))}
+          {(d.servicios ?? []).map((sv, i) => (
+            <tr key={`s${i}`} className="align-top"><td className="pt-1.5 pr-2"><span className="block">{sv.descripcion}</span><span className="block">{sv.cantidad} x {m2(sv.precio)}</span></td><td className="pt-1.5 text-right tabular-nums">{m2(sv.subtotal)}</td></tr>
+          ))}
           {Number(v.delivery) > 0 ? (
             <tr className="align-top"><td className="pt-1.5 pr-2">Servicio de delivery</td><td className="pt-1.5 text-right tabular-nums">{m2(v.delivery)}</td></tr>
           ) : null}
@@ -131,6 +135,8 @@ function Ticket({ d, lineas }: { d: Detalle; lineas: Lineas }) {
       <dl className="grid grid-cols-[1fr_auto] gap-x-3 tabular-nums">
         {v.descuento > 0 ? <><dt>Descuento</dt><dd className="text-right">-{m2(v.descuento)}</dd></> : null}
         <dt>Op. gravada</dt><dd className="text-right">{m2(v.subtotal)}</dd>
+        {Number(v.exonerada) > 0 ? <><dt>Op. exonerada</dt><dd className="text-right">{m2(v.exonerada)}</dd></> : null}
+        {Number(v.inafecta) > 0 ? <><dt>Op. inafecta</dt><dd className="text-right">{m2(v.inafecta)}</dd></> : null}
         <dt>IGV 18%</dt><dd className="text-right">{m2(v.igv)}</dd>
         <dt className="text-[13px] font-bold">TOTAL S/</dt><dd className="text-right text-[13px] font-bold">{m2(v.total)}</dd>
       </dl>
@@ -197,6 +203,12 @@ function HojaA4({ d, lineas }: { d: Detalle; lineas: Lineas }) {
               <td className="py-2 text-right tabular-nums">{m2(l.importe)}</td>
             </tr>
           ))}
+          {(d.servicios ?? []).map((sv, i) => (
+            <tr key={`s${i}`} className="border-b border-black/15 align-top">
+              <td className="py-2 pr-2 tabular-nums">{sv.cantidad}</td><td className="py-2 pr-2">{sv.descripcion}</td><td className="py-2 pr-2" /><td className="py-2 pr-2" />
+              <td className="py-2 pr-2 text-right tabular-nums">{m2(sv.precio)}</td><td className="py-2 text-right tabular-nums">{m2(sv.subtotal)}</td>
+            </tr>
+          ))}
           {Number(v.delivery) > 0 ? (
             <tr className="border-b border-black/15 align-top">
               <td className="py-2 pr-2 tabular-nums">1</td><td className="py-2 pr-2">Servicio de delivery</td><td className="py-2 pr-2" /><td className="py-2 pr-2" />
@@ -214,6 +226,8 @@ function HojaA4({ d, lineas }: { d: Detalle; lineas: Lineas }) {
         <dl className="grid min-w-[62mm] grid-cols-[1fr_auto] gap-x-4 gap-y-1 tabular-nums">
           {v.descuento > 0 ? <><dt>Descuento</dt><dd className="text-right">-{m2(v.descuento)}</dd></> : null}
           <dt>Op. gravada</dt><dd className="text-right">{m2(v.subtotal)}</dd>
+          {Number(v.exonerada) > 0 ? <><dt>Op. exonerada</dt><dd className="text-right">{m2(v.exonerada)}</dd></> : null}
+          {Number(v.inafecta) > 0 ? <><dt>Op. inafecta</dt><dd className="text-right">{m2(v.inafecta)}</dd></> : null}
           <dt>IGV 18%</dt><dd className="text-right">{m2(v.igv)}</dd>
           <dt className="border-t-2 border-black pt-1 text-[14px] font-bold">Total S/</dt><dd className="border-t-2 border-black pt-1 text-right text-[14px] font-bold">{m2(v.total)}</dd>
         </dl>

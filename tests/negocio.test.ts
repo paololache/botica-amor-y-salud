@@ -5,7 +5,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { schema, type Db } from "@/db";
 import { listarCargos, pagarCargo, regularizarEfectivo, esquemaRegularizacionEfectivo } from "@/lib/services/caja";
 import { abrirCaja, cerrarCaja, calcularEsperado, esquemaApertura, esquemaCierre, esquemaRegularizacion, esquemaValidacion, estadoCaja, listarSesiones, pagosVirtuales, regularizarPago, registrarMovimiento as movimientoDeCaja, reporteCierre, validarCierre } from "@/lib/services/caja";
-import { crearVenta, anularVenta } from "@/lib/services/ventas";
+import { crearVenta, anularVenta, esquemaVenta, ritmoDeVentas } from "@/lib/services/ventas";
 import { crearCampana, alternarCampana, campanasVigentes, recordatorioCampanas } from "@/lib/services/campanas";
 import { consolidarHasta, misComisiones, cerrarMes, detalleVendedor, resumenMes, esquemaHistoricoComisiones, historicoComisiones } from "@/lib/services/comisiones";
 import { registrarRecepcion, anularCompra, costearCompra, corregirCostoCompra, datosCorreccion, esquemaCorreccion, esquemaRecepcion, listarCompras } from "@/lib/services/compras";
@@ -28,6 +28,10 @@ import { detalleVenta, listarVentas } from "@/lib/services/ventas";
 import { evaluar, validarFormula } from "@/lib/formula";
 import { claveLaboratorio, hoy, esIdValido, limpiarNumero, precioSugerido, r4, sumarDias } from "@/lib/util";
 import { base, preparar } from "./fixture";
+import { anularAtencion, clasificarGlucosa, clasificarImc, clasificarPresion, editarServicio, esquemaAtencion, historialPaciente, listarServicios, registrarAtencion } from "@/lib/services/servicios";
+import { consultarCliente, listarClientes, nivelCliente } from "@/lib/services/clientes";
+import { sugerirPatologias } from "@/lib/terapeutica";
+import { completarPatologias } from "@/lib/services/productos";
 import { enviarCpe, estadoInicialCpe } from "@/lib/services/sunat";
 
 let db: Db;
@@ -1065,6 +1069,13 @@ describe("Meta del día y mensajes motivacionales", () => {
     expect(["Ya casi", "recta final", "muy cerca", "empujón"].some((t) => casi.includes(t))).toBe(true);
     for (let i = 0; i < 20; i++) { const a = mensajeMotivacional(meta(30), "Ana", 1); expect(mensajeMotivacional(meta(30), "Ana", 1, a)).not.toBe(a); }
     expect(mensajeMotivacional(null, "Ana", 10)).toMatch(/\S/);
+    // Varias ventas en la misma hora: frases de racha sobre lo bien que se vende hoy.
+    const ritmo = (v: number) => ({ ultimaHora: v, montoUltimaHora: v * 12.5, hoy: v + 4 });
+    expect(mensajeMotivacional(meta(30), "Ana Pérez", 5, null, ritmo(2))).not.toMatch(/última hora|esta hora|racha|en el día/);
+    for (let i = 0; i < 15; i++) expect(mensajeMotivacional(meta(30), "Ana Pérez", 5, null, ritmo(3))).toMatch(/hora|ventas en el día|movido/);
+    for (let i = 0; i < 15; i++) expect(mensajeMotivacional(null, "Ana", 5, null, ritmo(6))).toMatch(/6|S\/ 75\.00/);
+    for (let i = 0; i < 15; i++) expect(mensajeMotivacional(meta(60), "Ana", 5, null, ritmo(12))).toMatch(/12 ventas/);
+    expect(mensajeMotivacional(meta(105), "Ana Pérez", 10, null, ritmo(8))).toMatch(/cumpliste tu meta del día/); // cumplir la meta tiene prioridad
   });
 });
 
@@ -1518,5 +1529,193 @@ describe("Reportes del panel principal", () => {
     const [{ t }] = await filas<{ t: string }>(db, sql`select coalesce(sum(total), 0) as t from venta where estado = 'EMITIDA' and canal = 'MOSTRADOR' and usuario_id = ${F.caja1.id} and to_char(fecha at time zone 'America/Lima', 'YYYY-MM') = ${hoy().slice(0, 7)}`);
     expect(caj.seleccionado!.vendido).toBeCloseTo(Number(t), 2);
     expect(caj.seleccionado!.vendido).toBeLessThanOrEqual(adm.seleccionado!.vendido);
+  });
+});
+
+describe("Búsqueda de productos por marca, principio activo y patología", () => {
+  it("encuentra por nombre comercial y por para qué sirve; normaliza las patologías", async () => {
+    const lab = (await db.select().from(schema.laboratorio))[0];
+    const { id } = await crearProducto(db, F.admin, esquemaProducto.parse({ codigo: "7750000000999", nombre: "Paracetamol 120 mg/5 ml jarabe", nombreComercial: "Panadol Niños", principioActivo: "Paracetamol",
+      patologias: "Fiebre;  dolor de cabeza,FIEBRE, resfrío", laboratorioId: lab.id, costoUnitario: 4, precioUnidad: 9 }));
+    const [p] = await db.select().from(schema.producto).where(eq(schema.producto.id, id));
+    expect(p).toMatchObject({ nombreComercial: "Panadol Niños", patologias: "fiebre, dolor de cabeza, resfrío" });
+    expect((await buscarProductos(db, "panadol")).some((x) => x.id === id)).toBe(true);
+    expect((await buscarProductos(db, "dolor de cabeza")).some((x) => x.id === id)).toBe(true);
+    expect((await buscarProductos(db, "Paracetamol")).some((x) => x.id === id)).toBe(true);
+    expect((await listarStock(db, { q: "resfrío" })).productos.some((x) => x.id === id)).toBe(true);
+  });
+});
+
+describe("Clientes frecuentes", () => {
+  it("cataloga por cantidad de compras y con más de 10 ofrece primero los productos en promoción", async () => {
+    expect([1, 2, 5, 10, 11].map((n) => nivelCliente(n))).toEqual(["NUEVO", "OCASIONAL", "FRECUENTE", "FRECUENTE", "PREFERENTE"]);
+    expect(await consultarCliente(db, "99999999")).toEqual({ encontrado: false });
+    await db.update(schema.sesionCaja).set({ estado: "CERRADA", cerradaEn: new Date() }).where(inArray(schema.sesionCaja.estado, ["ABIERTA", "EN_CIERRE"]));
+    await abrirCaja(db, F.caja1, { turno: "MAÑANA", monto: 0 });
+    const [l] = await db.insert(schema.lote).values({ productoId: F.amox.id, numero: "AM-CLI", vencimiento: sumarDias(hoy(), 400), costoUnitario: 0.4, cantidad: 200 }).returning();
+    await db.insert(schema.kardex).values({ productoId: F.amox.id, loteId: l.id, tipo: "COMPRA", documentoTipo: "INVENTARIO_INICIAL", entrada: 200, costoUnitario: 0.4, saldoUnidades: 200, costoPromedio: 0.4, saldoValorizado: 80 });
+    const vender = (nombre: string) => crearVenta(db, F.caja1, { items: [{ presentacionId: F.presAmox.id, cantidad: 1, descuentoPct: 0, origen: "DIRECTA" }], tipoComprobante: "BOLETA", cliente: { tipoDoc: "DNI", numero: "41234567", nombre }, pagos: [{ medio: "EFECTIVO", monto: 6 }] });
+    await vender("Rosa Quispe");
+    for (let i = 0; i < 9; i++) await vender("Cliente"); // sin nombre escrito no pisa el registrado
+    let c = await consultarCliente(db, "41234567");
+    if (!c.encontrado) throw new Error("debía existir");
+    expect(c).toMatchObject({ compras: 10, nivel: "FRECUENTE", faltanParaOfertas: 1, ofertas: [] });
+    expect(c.cliente.nombre).toBe("Rosa Quispe");
+    expect(c.habituales[0]).toMatchObject({ productoId: F.amox.id, veces: 10 });
+    await vender("Rosa Quispe");
+    c = await consultarCliente(db, "41234567");
+    if (!c.encontrado) throw new Error("debía existir");
+    expect(c).toMatchObject({ compras: 11, nivel: "PREFERENTE", faltanParaOfertas: 0 });
+    const vigentes = await campanasVigentes(db);
+    expect(c.ofertas.length).toBe(Math.min(6, vigentes.length));
+    expect(c.ofertas.length).toBeGreaterThan(0);
+    const lista = await listarClientes(db, { nivel: "PREFERENTE" });
+    expect(lista.clientes.map((x) => x.numero)).toContain("41234567");
+    expect(lista.conteo.PREFERENTE).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("Servicios farmacéuticos", () => {
+  it("clasifica resultados con criterios clínicos", () => {
+    expect(clasificarPresion(118, 76).clasificacion).toBe("Normal");
+    expect(clasificarPresion(125, 78).clasificacion).toBe("Presión elevada");
+    expect(clasificarPresion(135, 85)).toMatchObject({ clasificacion: "Hipertensión estadio 1", derivar: true });
+    expect(clasificarPresion(150, 95).clasificacion).toBe("Hipertensión estadio 2");
+    expect(clasificarPresion(190, 110)).toMatchObject({ clasificacion: "Crisis hipertensiva", urgente: true });
+    expect(clasificarGlucosa(95, "AYUNAS").clasificacion).toBe("Normal");
+    expect(clasificarGlucosa(110, "AYUNAS").clasificacion).toBe("Alterada en ayunas");
+    expect(clasificarGlucosa(130, "AYUNAS").derivar).toBe(true);
+    expect(clasificarGlucosa(130, "POSTPRANDIAL").clasificacion).toBe("Normal");
+    expect(clasificarGlucosa(60, "ALEATORIA").clasificacion).toBe("Hipoglucemia");
+    expect(clasificarImc(70, 170)).toMatchObject({ imc: 24.2, clasificacion: "Normal" });
+  });
+  it("toma de presión: la registra el cajero, se clasifica, queda en el historial del paciente y no cobra si es gratuita", async () => {
+    const servicios = await listarServicios(db, F.caja1);
+    const pa = servicios.find((s) => s.tipo === "PRESION")!;
+    expect(pa.puedoRealizar).toBe(true);
+    expect(servicios.find((s) => s.codigo === "INY-IM")!.puedoRealizar).toBe(false);
+    const r = await registrarAtencion(db, F.caja1, esquemaAtencion.parse({ servicioId: pa.id, paciente: { doc: "41234567", nombre: "Rosa Quispe", edad: 58, sexo: "F" }, presion: { sistolica: 145, diastolica: 92, pulso: 78, brazo: "IZQUIERDO", reposo: true } }));
+    expect(r).toMatchObject({ clasificacion: "Hipertensión estadio 2", derivar: true, precio: 0 });
+    expect(esquemaAtencion.safeParse({ servicioId: pa.id, paciente: { nombre: "Ana" }, presion: { sistolica: 120, diastolica: 80, brazo: "DERECHO", reposo: false } }).success).toBe(false);
+    await expect(registrarAtencion(db, F.caja1, esquemaAtencion.parse({ servicioId: pa.id, paciente: { nombre: "Ana Ruiz" }, presion: { sistolica: 80, diastolica: 90, brazo: "DERECHO", reposo: true } }))).rejects.toThrow(/diastólica debe ser menor/);
+    const h = await historialPaciente(db, "41234567");
+    expect(h.paciente?.nombre).toBe("Rosa Quispe");
+    expect(h.atenciones[0]).toMatchObject({ clasificacion: "Hipertensión estadio 2" });
+  });
+  it("inyectable: solo el QF, con receta vigente, 5 correctos, consentimiento y producto no vencido; se cobra en la caja", async () => {
+    const im = (await listarServicios(db, F.qf)).find((s) => s.codigo === "INY-IM")!;
+    const base = {
+      servicioId: im.id, paciente: { doc: "41234567", nombre: "Rosa Quispe" }, medioPago: "YAPE",
+      inyectable: { origen: "EXTERNO", producto: "Dexametasona 4 mg/ml ampolla", lote: "DX123", vencimiento: sumarDias(hoy(), 200), dosis: "1 ampolla", sitio: "Glúteo derecho",
+        receta: { medico: "Dra. Carmen Salas", cmp: "045123", fecha: hoy() },
+        verificaciones: { pacienteCorrecto: true, medicamentoCorrecto: true, dosisCorrecta: true, viaCorrecta: true, horaCorrecta: true, alergiasConsultadas: true, observacionPosterior: true },
+        consentimiento: true },
+    };
+    const conInyectable = (cambio: Record<string, unknown>) => esquemaAtencion.parse({ ...base, inyectable: { ...base.inyectable, ...cambio } });
+    await expect(registrarAtencion(db, F.caja1, esquemaAtencion.parse(base))).rejects.toThrow(/lo realiza solo/);
+    await expect(registrarAtencion(db, F.qf, esquemaAtencion.parse(base))).rejects.toThrow(/Abre tu caja/);
+    await db.update(schema.sesionCaja).set({ estado: "CERRADA", cerradaEn: new Date() }).where(inArray(schema.sesionCaja.estado, ["ABIERTA", "EN_CIERRE"]));
+    const s = await abrirCaja(db, F.qf, { turno: "TARDE", monto: 0 });
+    await expect(registrarAtencion(db, F.qf, conInyectable({ verificaciones: { ...base.inyectable.verificaciones, dosisCorrecta: false } }))).rejects.toThrow(/5 correctos.*falta dosis/);
+    await expect(registrarAtencion(db, F.qf, conInyectable({ consentimiento: false }))).rejects.toThrow(/consentimiento/);
+    await expect(registrarAtencion(db, F.qf, conInyectable({ vencimiento: sumarDias(hoy(), -1) }))).rejects.toThrow(/vencido/);
+    await expect(registrarAtencion(db, F.qf, conInyectable({ receta: { ...base.inyectable.receta, fecha: sumarDias(hoy(), -45) } }))).rejects.toThrow(/más de 30 días/);
+    await expect(registrarAtencion(db, F.qf, conInyectable({ origen: "INTERNO" }))).rejects.toThrow(/Elige el producto y el lote/);
+    const r = await registrarAtencion(db, F.qf, esquemaAtencion.parse(base));
+    expect(r).toMatchObject({ precio: 3, clasificacion: "Aplicado sin incidencias" });
+    const virt = await pagosVirtuales(db, s.id);
+    expect(virt).toEqual([expect.objectContaining({ origen: "Ingreso", medio: "YAPE", monto: 3, referencia: expect.stringMatching(/^SRV-\d{6} · Inyectable intramuscular$/) })]);
+    expect((await calcularEsperado(db, s.id)).YAPE).toBe(3);
+    // Desde la botica: se elige un lote vigente; con reacción adversa queda para derivar.
+    const lt = await loteVigente(F.vit.id);
+    const interno = await registrarAtencion(db, F.qf, conInyectable({ origen: "INTERNO", loteId: lt.id, reaccionAdversa: "Enrojecimiento leve en la zona" }));
+    expect(interno).toMatchObject({ derivar: true, clasificacion: "Reacción adversa registrada" });
+    // Anular con la caja abierta saca el ingreso.
+    await anularAtencion(db, F.qf, r.id, { motivo: "Registrada dos veces" });
+    expect((await calcularEsperado(db, s.id)).YAPE).toBe(3);
+    // Buenas prácticas en el catálogo: un inyectable no se abre a cajeros ni se le quita la receta.
+    await expect(editarServicio(db, F.admin, im.id, { nombre: im.nombre, precio: 3, roles: ["CAJERO"], requiereReceta: true, requiereConsentimiento: true, activo: true })).rejects.toThrow(/invasivos/);
+    await expect(editarServicio(db, F.admin, im.id, { nombre: im.nombre, precio: 3, roles: ["QF"], requiereReceta: false, requiereConsentimiento: true, activo: true })).rejects.toThrow(/receta/);
+    expect(await editarServicio(db, F.admin, im.id, { nombre: im.nombre, precio: 4, roles: ["QF", "ADMIN"], requiereReceta: true, requiereConsentimiento: true, activo: true })).toMatchObject({ id: im.id });
+  });
+});
+
+describe("Búsqueda por patología con diccionario farmacológico", () => {
+  it("sugiere la acción terapéutica por principio activo y la búsqueda ignora tildes y filtra por campo", async () => {
+    expect(sugerirPatologias("PARACETAMOL")).toBe("analgésico, antipirético, dolor, fiebre, dolor de cabeza");
+    expect(sugerirPatologias("METAMIZOL SODICO 500MG")).toMatch(/^analgésico, antipirético/);
+    expect(sugerirPatologias("Bl. B6, B12, DICLOFENACO")).toMatch(/analgésico, antiinflamatorio/);
+    expect(sugerirPatologias(null, "OMEPRAZOL 20 MG")).toMatch(/gastritis/);
+    expect(sugerirPatologias("ACEITE ESENCIAL")).toBeNull(); // «sen» no coincide dentro de una palabra
+    expect(sugerirPatologias("JABON")).toBeNull();
+    const lab = (await db.select().from(schema.laboratorio))[0];
+    const { id } = await crearProducto(db, F.admin, esquemaProducto.parse({ codigo: "7750000001111", nombre: "Repriman 500 mg tableta", principioActivo: "Metamizol sódico", laboratorioId: lab.id, costoUnitario: 0.1, precioUnidad: 0.5 }));
+    const r = await completarPatologias(db, F.admin);
+    expect(r.completados).toBeGreaterThan(0);
+    const [p] = await db.select().from(schema.producto).where(eq(schema.producto.id, id));
+    expect(p.patologias).toMatch(/^analgésico, antipirético/);
+    // Sin tildes y por campo
+    expect((await buscarProductos(db, "analgesico")).some((x) => x.id === id)).toBe(true);
+    expect((await buscarProductos(db, "ANALGÉSICO", 25, "patologia")).some((x) => x.id === id)).toBe(true);
+    expect((await buscarProductos(db, "analgesico", 25, "nombre")).some((x) => x.id === id)).toBe(false);
+    expect((await buscarProductos(db, "metamizol", 25, "principio")).some((x) => x.id === id)).toBe(true);
+    expect((await buscarProductos(db, "repriman", 25, "principio")).some((x) => x.id === id)).toBe(false);
+    expect((await listarStock(db, { q: "antipiretico", campo: "patologia" })).productos.some((x) => x.id === id)).toBe(true);
+    // Lo que ya escribió el QF no se pisa
+    await db.update(schema.producto).set({ patologias: "dolor de muelas" }).where(eq(schema.producto.id, id));
+    await completarPatologias(db, F.admin);
+    expect((await db.select().from(schema.producto).where(eq(schema.producto.id, id)))[0].patologias).toBe("dolor de muelas");
+  });
+});
+
+describe("Venta con servicios y tipo de IGV por producto", () => {
+  it("cobra servicios en la misma venta y separa gravado, exonerado e inafecto", async () => {
+    await db.update(schema.sesionCaja).set({ estado: "CERRADA", cerradaEn: new Date() }).where(inArray(schema.sesionCaja.estado, ["ABIERTA", "EN_CIERRE"]));
+    await abrirCaja(db, F.caja1, { turno: "TARDE", monto: 0 });
+    const servicios = await listarServicios(db, F.caja1);
+    const im = servicios.find((s) => s.codigo === "INY-IM")!;
+    const pa = servicios.find((s) => s.codigo === "PA")!;
+    await db.update(schema.servicio).set({ precio: 10, precioExterno: 3 }).where(eq(schema.servicio.id, im.id));
+    // Un producto exonerado (p. ej. por indicación del contador)
+    await db.update(schema.producto).set({ tipoIgv: "EXONERADO" }).where(eq(schema.producto.id, F.amox.id));
+    await loteVigente(F.amox.id, 1); // hay stock de amoxicilina
+    const v = await crearVenta(db, F.caja1, {
+      items: [{ presentacionId: F.presAmox.id, cantidad: 1, descuentoPct: 0, origen: "DIRECTA" }],
+      servicios: [{ servicioId: im.id, cantidad: 1, origen: "EXTERNO" }, { servicioId: im.id, cantidad: 2, origen: "INTERNO" }],
+      tipoComprobante: "BOLETA", pagos: [{ medio: "EFECTIVO", monto: 50 }],
+    });
+    // 6 (amoxicilina exonerada) + 3 (inyectable externo) + 20 (dos con medicamento de la botica)
+    expect(v).toMatchObject({ total: 29, exonerada: 6, inafecta: 0, subtotal: 19.49, igv: 3.51, vuelto: 21 });
+    const comp = await detalleVenta(db, v.id, F.caja1);
+    expect(comp.servicios.map((x) => [x.descripcion, x.cantidad, x.subtotal])).toEqual([["Inyectable intramuscular (medicamento externo)", 1, 3], ["Inyectable intramuscular (medicamento de la botica)", 2, 20]]);
+    const [d] = await db.select().from(schema.ventaDetalle).where(eq(schema.ventaDetalle.ventaId, v.id));
+    expect(d.tipoIgv).toBe("EXONERADO");
+    // Solo servicios (sin productos) también se puede vender; un servicio gratuito no.
+    const soloServicio = await crearVenta(db, F.caja1, { items: [], servicios: [{ servicioId: im.id, cantidad: 1 }], tipoComprobante: "NOTA_VENTA", pagos: [{ medio: "YAPE", monto: 10 }] });
+    expect(soloServicio).toMatchObject({ total: 10, igv: 1.53 });
+    await expect(crearVenta(db, F.caja1, { items: [], servicios: [{ servicioId: pa.id, cantidad: 1 }], tipoComprobante: "NOTA_VENTA", pagos: [{ medio: "EFECTIVO", monto: 1 }] })).rejects.toThrow(/gratuito/);
+    expect(esquemaVenta.safeParse({ items: [], servicios: [], tipoComprobante: "BOLETA", pagos: [{ medio: "EFECTIVO", monto: 1 }] }).success).toBe(false);
+    // Registro clínico del inyectable ya cobrado: no vuelve a cobrar.
+    const qfAtencion = await registrarAtencion(db, F.admin, esquemaAtencion.parse({
+      servicioId: im.id, paciente: { nombre: "Paciente Venta" }, cobradoEnVenta: true,
+      inyectable: { origen: "EXTERNO", producto: "Complejo B ampolla", lote: "CB1", vencimiento: sumarDias(hoy(), 300), dosis: "1 ampolla", sitio: "Glúteo derecho",
+        receta: { medico: "Dr. Juan Ríos", cmp: "012345", fecha: hoy() }, consentimiento: true,
+        verificaciones: { pacienteCorrecto: true, medicamentoCorrecto: true, dosisCorrecta: true, viaCorrecta: true, horaCorrecta: true, alergiasConsultadas: true, observacionPosterior: true } },
+    }));
+    expect(qfAtencion.precio).toBe(0);
+    await db.update(schema.producto).set({ tipoIgv: "GRAVADO" }).where(eq(schema.producto.id, F.amox.id));
+  });
+});
+
+describe("Ritmo de ventas para las frases de racha", () => {
+  it("cuenta las ventas de mostrador de quien vende en la última hora y en el día", async () => {
+    const r = await ritmoDeVentas(db, F.caja1.id);
+    const [{ hora, hoyN }] = await filas<{ hora: string; hoyN: string }>(db, sql`
+      select count(*) filter (where fecha >= now() - interval '1 hour') as hora, count(*) as "hoyN" from venta
+      where usuario_id = ${F.caja1.id} and estado = 'EMITIDA' and canal = 'MOSTRADOR' and fecha >= ${new Date(new Date().toLocaleDateString("en-CA", { timeZone: "America/Lima" }) + "T05:00:00Z").toISOString()}`);
+    expect(r.ultimaHora).toBe(Number(hora));
+    expect(r.hoy).toBe(Number(hoyN));
+    expect(r.ultimaHora).toBeGreaterThan(0);
+    expect((await ritmoDeVentas(db, F.caja1.id, new Date(Date.now() + 3 * 3600_000))).ultimaHora).toBe(0);
   });
 });
