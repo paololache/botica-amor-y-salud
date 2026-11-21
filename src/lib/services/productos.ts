@@ -310,12 +310,15 @@ export async function completarPatologias(db: Db, user: Sesion, opciones: { simu
  * Siguiente código de barras interno: continúa la serie de la botica (códigos con ceros a la izquierda, 12 dígitos),
  * por encima del mayor que exista en productos o presentaciones. Los códigos de fábrica (775…) no se tocan.
  */
-export async function siguienteCodigo(db: Db) {
+export async function siguienteCodigo(db: Db, despues?: string | null) {
   const [r] = await filas<{ max: string | null }>(db, sql`
     select max(codigo::numeric) as max from (
       select codigo from producto union all select codigo from presentacion where codigo is not null
     ) c where codigo ~ '^0{3,}[0-9]{1,15}$'`);
-  let n = Number(r?.max ?? 0) + 1;
+  // «despues»: el código que ya está en pantalla; al pedir otro, se continúa desde ahí.
+  // Solo si es de la serie interna (ceros a la izquierda): un código de fábrica (775…) no cambia la serie.
+  const desde = despues && /^0{3,}\d{1,15}$/.test(despues) ? Number(despues) : 0;
+  let n = Math.max(Number(r?.max ?? 0), desde) + 1;
   for (let intento = 0; intento < 50; intento++, n++) {
     const codigo = String(n).padStart(12, "0");
     const [usado] = await filas<{ x: number }>(db, sql`select 1 as x from producto where codigo = ${codigo} union all select 1 from presentacion where codigo = ${codigo} limit 1`);

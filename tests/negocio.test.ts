@@ -1737,6 +1737,10 @@ describe("Alta de productos: código correlativo, categorías y precios", () => 
     await crearProducto(db, F.admin, esquemaProducto.parse({ codigo, nombre: "Producto de código automático", laboratorioId: lab.id, costoUnitario: 1, precioUnidad: 2 }));
     const sig = await siguienteCodigo(db);
     expect(Number(sig.codigo)).toBe(Number(codigo) + 1);
+    // Con el botón «Generar» se pide el que sigue al que está en pantalla: siempre cambia.
+    expect(Number((await siguienteCodigo(db, sig.codigo)).codigo)).toBe(Number(sig.codigo) + 1);
+    expect((await siguienteCodigo(db, "abc")).codigo).toBe(sig.codigo);
+    expect((await siguienteCodigo(db, "7750000099999")).codigo).toBe(sig.codigo); // un código de fábrica no cambia la serie interna
     // Categorías
     const c = await crearCategoria(db, F.admin, { nombre: "  cuidado   capilar " });
     expect(c.nombre).toBe("Cuidado capilar");

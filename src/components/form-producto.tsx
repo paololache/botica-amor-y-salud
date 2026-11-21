@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { RefreshCw, Settings2, Trash } from "lucide-react";
+import { Settings2, Trash } from "lucide-react";
 import { api, soles } from "@/lib/cliente";
 import { IGV } from "@/lib/util";
 import { costoSinIgv, gananciaDesdePrecio, precioDesdeGanancia, resultadoPrecio } from "@/lib/precios";
@@ -69,11 +69,13 @@ export function FormProducto({ producto: p, categorias, laboratorios, alCerrar, 
 
   // Código de barras: en un producto nuevo se genera solo, siguiendo la serie interna; se puede cambiar o escanear el de fábrica.
   const [codigoAuto, setCodigoAuto] = useState<string | null>(null);
-  const generarCodigo = async () => {
-    try { const r = await api<{ codigo: string }>("/api/productos/siguiente-codigo"); setCodigoAuto(r.codigo); cambiar("codigo", r.codigo); }
-    catch (e) { avisar("error", (e as Error).message); }
-  };
-  useEffect(() => { if (!p) generarCodigo(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Se pide una sola vez, al abrir: el vendedor no regenera códigos a mano.
+  useEffect(() => {
+    if (p) return;
+    api<{ codigo: string }>("/api/productos/siguiente-codigo")
+      .then((r) => { setCodigoAuto(r.codigo); setF((x) => (x.codigo ? x : { ...x, codigo: r.codigo })); })
+      .catch((e) => avisar("error", (e as Error).message));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Categorías: se pueden agregar al vuelo y eliminar las que ningún producto usa.
   const [cats, setCats] = useState<Categoria[]>(categorias);
@@ -120,7 +122,6 @@ export function FormProducto({ producto: p, categorias, laboratorios, alCerrar, 
           <Campo etiqueta="Código de barras" ayuda={!p && codigoAuto && f.codigo === codigoAuto ? "Generado automáticamente (correlativo). Puedes cambiarlo o escanear el de fábrica" : "Al escanearlo se vende por unidad"}>
             <div className="flex gap-2">
               <Entrada value={f.codigo} onChange={(e) => cambiar("codigo", e.target.value.replace(/[^A-Za-z0-9-]/g, "").slice(0, 20))} placeholder="000000000001" />
-              {!p ? <button type="button" onClick={generarCodigo} title="Generar el siguiente código correlativo" aria-label="Generar código" className="h-10 w-10 shrink-0 grid place-items-center rounded-xl border border-foil-3 text-ink-2 hover:text-ink"><RefreshCw size={15} /></button> : null}
             </div>
           </Campo>
           <SelectorLaboratorio laboratorios={catalogo} valor={lab} alElegir={elegirLab} />
