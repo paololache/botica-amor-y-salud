@@ -31,7 +31,9 @@ import { base, preparar } from "./fixture";
 import { anularAtencion, clasificarGlucosa, clasificarImc, clasificarPresion, editarServicio, esquemaAtencion, historialPaciente, listarServicios, registrarAtencion } from "@/lib/services/servicios";
 import { consultarCliente, listarClientes, nivelCliente } from "@/lib/services/clientes";
 import { sugerirPatologias } from "@/lib/terapeutica";
-import { completarPatologias } from "@/lib/services/productos";
+import { completarPatologias, siguienteCodigo } from "@/lib/services/productos";
+import { crearCategoria, eliminarCategoria, listarCategorias } from "@/lib/services/categorias";
+import { costoSinIgv, gananciaDesdePrecio, precioDesdeGanancia, resultadoPrecio } from "@/lib/precios";
 import { enviarCpe, estadoInicialCpe } from "@/lib/services/sunat";
 
 let db: Db;
@@ -554,6 +556,12 @@ describe("Anulación de compra", () => {
     const fila = (await listarCompras(db)).find((x) => x.id === c.id);
     expect(fila?.estado).toBe("ANULADA");
     expect(fila?.motivoAnulacion).toBe("Compra registrada dos veces");
+  });
+  it("muestra el motivo de anulación de cada compra aunque los números de auditoría no coincidan", async () => {
+    await db.insert(schema.auditoria).values(Array.from({ length: 37 }, () => ({ usuarioId: F.admin.id, accion: "RELLENO", entidad: "prueba", entidadId: null })));
+    const c = await ingresar("9", "ANUL-M", 2, 40);
+    await anularCompra(db, F.admin, c.id, { motivo: "Motivo propio de esta compra" });
+    expect((await listarCompras(db)).find((x) => x.id === c.id)?.motivoAnulacion).toBe("Motivo propio de esta compra");
   });
 
   it("el promedio sale bien con compras posteriores y al corregir o anular otra después", async () => {
@@ -1718,5 +1726,33 @@ describe("Ritmo de ventas para las frases de racha", () => {
     expect(r.hoy).toBe(Number(hoyN));
     expect(r.ultimaHora).toBeGreaterThan(0);
     expect((await ritmoDeVentas(db, F.caja1.id, new Date(Date.now() + 3 * 3600_000))).ultimaHora).toBe(0);
+  });
+});
+
+describe("Alta de productos: código correlativo, categorías y precios", () => {
+  it("genera el siguiente código interno, administra categorías y calcula ganancia y margen", async () => {
+    const { codigo } = await siguienteCodigo(db);
+    expect(codigo).toMatch(/^\d{12}$/);
+    const lab = (await db.select().from(schema.laboratorio))[0];
+    await crearProducto(db, F.admin, esquemaProducto.parse({ codigo, nombre: "Producto de código automático", laboratorioId: lab.id, costoUnitario: 1, precioUnidad: 2 }));
+    const sig = await siguienteCodigo(db);
+    expect(Number(sig.codigo)).toBe(Number(codigo) + 1);
+    // Categorías
+    const c = await crearCategoria(db, F.admin, { nombre: "  cuidado   capilar " });
+    expect(c.nombre).toBe("Cuidado capilar");
+    await expect(crearCategoria(db, F.admin, { nombre: "CUIDADO CAPILAR" })).rejects.toThrow(/Ya existe/);
+    const enUso = (await listarCategorias(db)).find((x) => x.productos > 0)!;
+    await expect(eliminarCategoria(db, F.admin, enUso.id)).rejects.toThrow(/cámbialos de categoría/);
+    expect(await eliminarCategoria(db, F.admin, c.id)).toMatchObject({ eliminada: true });
+    // Precios: costo con IGV 1.18 → 1.00 sin IGV; 40 % de ganancia → S/ 1.70 (sube a los 10 céntimos)
+    expect(costoSinIgv(1.18, true)).toBe(1);
+    expect(costoSinIgv(1, false)).toBe(1);
+    expect(precioDesdeGanancia(1, 1, 40)).toBe(1.7);
+    expect(precioDesdeGanancia(1, 10, 30)).toBe(15.4);
+    expect(gananciaDesdePrecio(1.77, 1)).toBe(50);
+    expect(resultadoPrecio(1.77, 1)).toMatchObject({ costo: 1, ganancia: 0.5, sobreCosto: 50, delPrecio: 33.3, pierde: false });
+    expect(resultadoPrecio(1, 1).pierde).toBe(true);
+    // Sin IGV (exonerado): la ganancia es precio menos costo
+    expect(resultadoPrecio(1.5, 1, 1, false)).toMatchObject({ ganancia: 0.5, sobreCosto: 50 });
   });
 });

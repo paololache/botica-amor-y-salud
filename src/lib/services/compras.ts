@@ -51,7 +51,8 @@ export async function listarCompras(db: Db, estado?: string) {
     id: compra.id, proveedor: proveedor.razonSocial, ruc: proveedor.ruc, tipo: compra.tipoComprobante, serie: compra.serie, numero: compra.numero,
     fechaEmision: compra.fechaEmision, estado: compra.estado, registradoEn: compra.registradoEn, registradoPor: usuario.nombre, totalCosto: compra.total,
     correcciones: sql<number>`(select count(*) from auditoria a where a.accion = 'CORREGIR_COSTO_COMPRA' and a.entidad_id = ${compra.id})`.mapWith(Number),
-    motivoAnulacion: sql<string | null>`(select a.detalle->>'motivo' from auditoria a where a.accion = 'ANULAR_COMPRA' and a.entidad_id = ${compra.id} order by a.id desc limit 1)`,
+    // «compra».«id» explícito: interpolada en un campo del select, la columna saldría sin tabla y apuntaría a a.id.
+    motivoAnulacion: sql<string | null>`(select a.detalle->>'motivo' from auditoria a where a.accion = 'ANULAR_COMPRA' and a.entidad_id = "compra"."id" order by a.id desc limit 1)`,
   }).from(compra).innerJoin(proveedor, eq(proveedor.id, compra.proveedorId)).innerJoin(usuario, eq(usuario.id, compra.registradoPor))
     .where(estado ? eq(compra.estado, estado) : undefined).orderBy(desc(compra.id)).limit(100);
   return rows;

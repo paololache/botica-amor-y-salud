@@ -305,3 +305,21 @@ export async function completarPatologias(db: Db, user: Sesion, opciones: { simu
   }
   return { sinPatologia: sin.length, completados: opciones.simular ? 0 : cambios.length, posibles: cambios.length, ejemplos: cambios.slice(0, 5).map((c) => ({ nombre: c.nombre, patologias: c.patologias })) };
 }
+
+/**
+ * Siguiente código de barras interno: continúa la serie de la botica (códigos con ceros a la izquierda, 12 dígitos),
+ * por encima del mayor que exista en productos o presentaciones. Los códigos de fábrica (775…) no se tocan.
+ */
+export async function siguienteCodigo(db: Db) {
+  const [r] = await filas<{ max: string | null }>(db, sql`
+    select max(codigo::numeric) as max from (
+      select codigo from producto union all select codigo from presentacion where codigo is not null
+    ) c where codigo ~ '^0{3,}[0-9]{1,15}$'`);
+  let n = Number(r?.max ?? 0) + 1;
+  for (let intento = 0; intento < 50; intento++, n++) {
+    const codigo = String(n).padStart(12, "0");
+    const [usado] = await filas<{ x: number }>(db, sql`select 1 as x from producto where codigo = ${codigo} union all select 1 from presentacion where codigo = ${codigo} limit 1`);
+    if (!usado) return { codigo };
+  }
+  throw new ErrorNegocio("CODIGO", "No se pudo generar un código libre; escríbelo a mano.");
+}
