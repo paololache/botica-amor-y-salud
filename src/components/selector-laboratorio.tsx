@@ -9,14 +9,25 @@ export type Laboratorio = { id: number; nombre: string };
 type Respuesta = { laboratorio: Laboratorio | null; existente: boolean; parecidos: Laboratorio[] };
 
 /** El laboratorio siempre se elige del catálogo; lo que no existe se da de alta aquí mismo, pasando por la validación de duplicados. */
-export function SelectorLaboratorio({ etiqueta = "Laboratorio", laboratorios, valor, alElegir }: { etiqueta?: string; laboratorios: Laboratorio[]; valor: Laboratorio | null; alElegir: (l: Laboratorio | null) => void }) {
+/** Orden de las coincidencias: igual, empieza igual, contiene; a igualdad, el nombre más corto. */
+function ordenar(laboratorios: Laboratorio[], clave: string) {
+  const rango = (l: Laboratorio) => { const k = claveLaboratorio(l.nombre); return k === clave ? 0 : k.startsWith(clave) ? 1 : 2; };
+  return laboratorios.filter((l) => !clave || claveLaboratorio(l.nombre).includes(clave))
+    .sort((a, b) => (clave ? rango(a) - rango(b) || a.nombre.length - b.nombre.length : 0) || a.nombre.localeCompare(b.nombre));
+}
+
+/**
+ * autoElegir: al salir del campo con un texto a medias («ac farm»), se elige solo el laboratorio que mejor coincide
+ * («AC FARMA»). Si no hay ninguno, queda a la vista el aviso para agregarlo como nuevo.
+ */
+export function SelectorLaboratorio({ etiqueta = "Laboratorio", laboratorios, valor, alElegir, autoElegir = false }: { etiqueta?: string; laboratorios: Laboratorio[]; valor: Laboratorio | null; alElegir: (l: Laboratorio | null) => void; autoElegir?: boolean }) {
   const [q, setQ] = useState("");
   const [abierto, setAbierto] = useState(false);
   const [parecidos, setParecidos] = useState<Laboratorio[] | null>(null);
   const [ocupado, setOcupado] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const clave = claveLaboratorio(q);
-  const coincidencias = laboratorios.filter((l) => !clave || claveLaboratorio(l.nombre).includes(clave));
+  const coincidencias = ordenar(laboratorios, clave);
   const exacto = laboratorios.some((l) => claveLaboratorio(l.nombre) === clave);
   const puedeCrear = clave.length >= 2 && !exacto;
 
@@ -42,7 +53,8 @@ export function SelectorLaboratorio({ etiqueta = "Laboratorio", laboratorios, va
   return (
     <div>
       {titulo}
-      <Entrada value={q} autoComplete="off" aria-label={etiqueta} placeholder="Busca o agrega un laboratorio" onFocus={() => setAbierto(true)} onBlur={() => setAbierto(false)}
+      <Entrada value={q} autoComplete="off" aria-label={etiqueta} placeholder="Busca o agrega un laboratorio" onFocus={() => setAbierto(true)}
+        onBlur={() => { setAbierto(false); if (autoElegir && clave && coincidencias.length && !parecidos) elegir(coincidencias[0]); }}
         onChange={(e) => { setQ(e.target.value); setParecidos(null); setError(null); setAbierto(true); }}
         onKeyDown={(e) => {
           if (e.key !== "Enter") return;
@@ -62,6 +74,11 @@ export function SelectorLaboratorio({ etiqueta = "Laboratorio", laboratorios, va
           {puedeCrear ? <li><button type="button" disabled={ocupado} className={`${opcion} font-semibold text-vino-2 flex items-center gap-1.5`} onClick={() => crear(false)}><Plus size={15} /> Agregar «{q.trim()}»</button></li> : null}
           {!coincidencias.length && !puedeCrear ? <li className="px-3 py-2 text-sm text-ink-3">Escribe el nombre del laboratorio</li> : null}
         </ul>
+      ) : autoElegir && puedeCrear && !coincidencias.length ? (
+        <div className="mt-1.5 rounded-xl border border-ambar/60 bg-ambar-claro/50 px-3 py-2 text-[12.5px]" role="status">
+          «{q.trim()}» no está en el catálogo.{" "}
+          <button type="button" disabled={ocupado} className="font-semibold text-vino-2" onClick={() => crear(false)}>Agregarlo como laboratorio nuevo</button>
+        </div>
       ) : null}
       {error ? <p className="text-[12px] text-rojo mt-1" role="alert">{error}</p> : null}
     </div>

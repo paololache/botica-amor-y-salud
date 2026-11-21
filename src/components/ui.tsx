@@ -101,13 +101,28 @@ export function Vacio({ titulo, children, accion }: { titulo: string; children?:
   );
 }
 
-export function Modal({ abierto, alCerrar, titulo, children, ancho = "max-w-lg" }: { abierto: boolean; alCerrar: () => void; titulo: string; children: ReactNode; ancho?: string }) {
+export function Modal({ abierto, alCerrar, titulo, children, ancho = "max-w-lg", completo = false }: { abierto: boolean; alCerrar: () => void; titulo: string; children: ReactNode; ancho?: string; completo?: boolean }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const d = ref.current; if (!d) return;
     if (abierto && !d.open) d.showModal();
     if (!abierto && d.open) d.close();
   }, [abierto]);
+  // A pantalla completa: ocupa toda la ventana, con el título fijo arriba y el contenido desplazable.
+  if (completo) return (
+    <dialog ref={ref} onClose={alCerrar} onCancel={(e) => { e.preventDefault(); alCerrar(); }}
+      className="w-screen h-dvh max-w-none max-h-none m-0 p-0 rounded-none bg-papel backdrop:bg-petroleo/45">
+      {abierto ? (
+        <div className="h-full flex flex-col">
+          <div className="shrink-0 flex items-center justify-between gap-3 px-4 sm:px-8 py-3 border-b border-foil-2">
+            <h2 className="font-display font-semibold text-xl">{titulo}</h2>
+            <button onClick={alCerrar} className="size-9 grid place-items-center rounded-full hover:bg-foil" aria-label="Cerrar"><X size={18} /></button>
+          </div>
+          <div className="flex-1 min-h-0 overflow-y-auto">{children}</div>
+        </div>
+      ) : null}
+    </dialog>
+  );
   return (
     <dialog ref={ref} onClose={alCerrar} onCancel={(e) => { e.preventDefault(); alCerrar(); }}
       className={`w-[calc(100%-32px)] ${ancho} rounded-3xl p-0 backdrop:bg-petroleo/45 backdrop:backdrop-blur-[2px] shadow-2xl m-auto`}>

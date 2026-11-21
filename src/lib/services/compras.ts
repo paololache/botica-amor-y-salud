@@ -3,7 +3,8 @@ import { z } from "zod";
 import { fecha, montoOCero, texto } from "../validacion";
 import { schema, type Db } from "@/db";
 import type { Sesion } from "../auth";
-import { ErrorNegocio, hoy as hoyLima, precioSugerido, r2, r4, sumarDias } from "../util";
+import { ErrorNegocio, hoy as hoyLima, r2, r4, sumarDias } from "../util";
+import { precioDesdeGanancia } from "../precios";
 import { actualizarCostoPromedio, bloquearProductos, registrarKardex, restarLote, sumarLote } from "./inventario";
 import { parametros } from "./parametros";
 
@@ -64,7 +65,7 @@ export async function detalleCompra(db: Db, id: number) {
   const items = await db.select({
     id: compraDetalle.id, producto: producto.nombre, productoId: producto.id, presentacion: presentacion.nombre, factor: presentacion.factor, cantidad: compraDetalle.cantidad,
     unidades: compraDetalle.unidades, numeroLote: compraDetalle.numeroLote, vencimiento: compraDetalle.vencimiento, costoPresentacion: compraDetalle.costoPresentacion,
-    costoAnterior: producto.costoPromedio, pvp: presentacion.pvp, porcentajeUtilidad: producto.porcentajeUtilidad,
+    costoAnterior: producto.costoPromedio, pvp: presentacion.pvp, porcentajeUtilidad: producto.porcentajeUtilidad, tipoIgv: producto.tipoIgv,
   }).from(compraDetalle).innerJoin(producto, eq(producto.id, compraDetalle.productoId)).innerJoin(presentacion, eq(presentacion.id, compraDetalle.presentacionId))
     .where(eq(compraDetalle.compraId, id));
   const { total, ...cab } = c;
@@ -116,7 +117,7 @@ export async function costearCompra(db: Db, user: Sesion, id: number, input: z.i
       await registrarKardex(tx, { productoId: f.productoId, loteId, tipo: "COMPRA", documentoTipo: det.compra.tipoComprobante, documentoId: id, documentoRef: ref, entrada: f.unidades, costoUnitario: costoU, usuarioId: user.id });
       await tx.update(compraDetalle).set({ costoPresentacion: cp, loteId }).where(eq(compraDetalle.id, f.id));
       const it = det.items.find((x) => x.id === f.id)!;
-      pvpSugerido.push({ producto: it.producto, pvpSugerido: precioSugerido(cpNuevo, it.factor, it.porcentajeUtilidad) });
+      pvpSugerido.push({ producto: it.producto, pvpSugerido: precioDesdeGanancia(cpNuevo, it.factor, it.porcentajeUtilidad, it.tipoIgv === "GRAVADO") });
     }
     await tx.update(compra).set({ estado: "CONFIRMADA", costeadoPor: user.id, costeadoEn: new Date(), total: r2(total) }).where(eq(compra.id, id));
     await tx.insert(auditoria).values({ usuarioId: user.id, accion: "COSTEAR_COMPRA", entidad: "compra", entidadId: id, detalle: { total: r2(total) } });
@@ -188,7 +189,7 @@ export async function corregirCostoCompra(db: Db, user: Sesion, id: number, inpu
     for (const f of cambios) {
       const it = det.items.find((x) => x.id === f.id)!;
       await registrarKardex(tx, { productoId: f.productoId, loteId: f.loteId, tipo: "CORRECCION_COSTO", motivo: input.motivo, documentoTipo: det.compra.tipoComprobante, documentoId: id, documentoRef: ref, costoUnitario: r4(nuevos.get(f.id)! * f.cantidad / f.unidades), usuarioId: user.id });
-      pvpSugerido.push({ producto: it.producto, pvpSugerido: precioSugerido(promedios.get(f.productoId)!, it.factor, it.porcentajeUtilidad) });
+      pvpSugerido.push({ producto: it.producto, pvpSugerido: precioDesdeGanancia(promedios.get(f.productoId)!, it.factor, it.porcentajeUtilidad, it.tipoIgv === "GRAVADO") });
       lineasAuditoria.push({ producto: it.producto, presentacion: it.presentacion, lote: f.numeroLote, antes: f.costoPresentacion, despues: nuevos.get(f.id), promedioAntes: previos.find((p) => p.id === f.productoId)?.cp, promedioDespues: promedios.get(f.productoId) });
     }
     await tx.insert(auditoria).values({ usuarioId: user.id, accion: "CORREGIR_COSTO_COMPRA", entidad: "compra", entidadId: id, detalle: { motivo: input.motivo, comprobante: ref, totalAntes: det.compra.totalCosto, totalDespues: r2(total), cambios: lineasAuditoria } });

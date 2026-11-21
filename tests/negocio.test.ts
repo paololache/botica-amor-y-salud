@@ -186,7 +186,7 @@ describe("Compra en dos pasos y salidas", () => {
     const [p] = await db.select().from(schema.producto).where(eq(schema.producto.id, F.vit.id));
     expect(p.costoPromedio).toBeGreaterThan(10);
     const [det] = await db.select({ factor: schema.presentacion.factor }).from(schema.compraDetalle).innerJoin(schema.presentacion, eq(schema.presentacion.id, schema.compraDetalle.presentacionId)).where(eq(schema.compraDetalle.compraId, r.id));
-    expect(c.pvpSugerido[0].pvpSugerido).toBe(precioSugerido(p.costoPromedio, det.factor, p.porcentajeUtilidad));
+    expect(c.pvpSugerido[0].pvpSugerido).toBe(precioDesdeGanancia(p.costoPromedio, det.factor, p.porcentajeUtilidad, p.tipoIgv === "GRAVADO"));
     expect(c.pvpSugerido[0].pvpSugerido).toBeGreaterThan(p.costoPromedio * det.factor * 1.18);
   });
   it("quien registra la salida no la aprueba (RN-09)", async () => {

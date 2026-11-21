@@ -97,6 +97,12 @@ export function FormProducto({ producto: p, categorias, laboratorios, alCerrar, 
     } catch (e) { avisar("error", (e as Error).message); }
   };
 
+  // Lo que falta para poder guardar, dicho con palabras: el botón no queda deshabilitado sin explicación.
+  const faltan = [
+    !f.codigo && "código de barras", !f.nombre.trim() && "nombre", !lab && "laboratorio (elígelo de la lista o agrégalo)",
+    f.costo === "" && "costo unitario", !(num(pvp) > 0) && "precio por unidad",
+  ].filter(Boolean) as string[];
+
   const guardar = async () => {
     setOcupado(true); setError(null);
     const empaque = (factor: string, precio: string, codigo: string) => (factor.trim() || precio.trim() || codigo ? { factor: num(factor), pvp: num(precio), codigo: codigo || null } : null);
@@ -116,15 +122,18 @@ export function FormProducto({ producto: p, categorias, laboratorios, alCerrar, 
   };
 
   return (
-    <Modal abierto alCerrar={alCerrar} titulo={p ? "Editar producto" : "Agregar producto"} ancho="max-w-3xl">
-      <div className="space-y-5">
+    <Modal abierto completo alCerrar={alCerrar} titulo={p ? `Editar producto · ${p.nombre}` : "Agregar producto"}>
+      <div className="min-h-full flex flex-col">
+      <div className="flex-1 w-full max-w-[1400px] mx-auto px-4 sm:px-8 py-6 grid xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-6 items-start">
+        <section aria-label="Datos del producto">
+        <h3 className="font-display font-semibold text-[15px] mb-3">Datos del producto</h3>
         <div className="grid sm:grid-cols-2 gap-3">
           <Campo etiqueta="Código de barras" ayuda={!p && codigoAuto && f.codigo === codigoAuto ? "Generado automáticamente (correlativo). Puedes cambiarlo o escanear el de fábrica" : "Al escanearlo se vende por unidad"}>
             <div className="flex gap-2">
               <Entrada value={f.codigo} onChange={(e) => cambiar("codigo", e.target.value.replace(/[^A-Za-z0-9-]/g, "").slice(0, 20))} placeholder="000000000001" />
             </div>
           </Campo>
-          <SelectorLaboratorio laboratorios={catalogo} valor={lab} alElegir={elegirLab} />
+          <SelectorLaboratorio laboratorios={catalogo} valor={lab} alElegir={elegirLab} autoElegir />
           <Campo etiqueta="Nombre del producto" className="sm:col-span-2"><Entrada autoFocus value={f.nombre} onChange={(e) => { setConfirmarDuplicado(false); setError(null); cambiar("nombre", e.target.value); }} placeholder="Dolofenex Forte cápsula" /></Campo>
           <Campo etiqueta="Nombre comercial o marca (opcional)" ayuda="Como lo pide el cliente; se puede buscar por aquí"><Entrada value={f.nombreComercial} onChange={(e) => cambiar("nombreComercial", e.target.value)} placeholder="Panadol" /></Campo>
           <Campo etiqueta="Principio activo (opcional)" ayuda="Permite buscar sustitutos con F9 en Vender"><Entrada value={f.principioActivo} onChange={(e) => cambiar("principioActivo", e.target.value)} placeholder="Paracetamol" /></Campo>
@@ -169,6 +178,7 @@ export function FormProducto({ producto: p, categorias, laboratorios, alCerrar, 
           <Campo etiqueta="Tipo de IGV" ayuda="Casi todo es gravado (18 %). Cámbialo solo si el contador lo indica"><Selector value={f.tipoIgv} onChange={(e) => cambiar("tipoIgv", e.target.value)}><option value="GRAVADO">Gravado (con IGV)</option><option value="EXONERADO">Exonerado</option><option value="INAFECTO">Inafecto</option></Selector></Campo>
           <Campo etiqueta="Stock mínimo (unidades)"><EntradaNumero inputMode="numeric" value={f.stockMinimo} onChange={(e) => cambiar("stockMinimo", e.target.value.replace(/\D/g, ""))} /></Campo>
         </div>
+        </section>
         <fieldset className="rounded-2xl border border-foil-2 p-4">
           <legend className="px-1 text-[13px] font-semibold">Costo, ganancia y precios de venta</legend>
           <div className="grid sm:grid-cols-3 gap-3">
@@ -198,14 +208,14 @@ export function FormProducto({ producto: p, categorias, laboratorios, alCerrar, 
           {costo > 0 && filasResultado.length ? (
             <div className="mt-4 overflow-x-auto rounded-xl border border-foil-2">
               <table className="tabla" aria-label="Cuánto ganas con cada precio">
-                <thead><tr><th>Cuánto ganas</th><th className="num">Precio</th><th className="num">Costo (sin IGV)</th><th className="num">Ganancia</th><th className="num" title="Ganancia dividida entre el costo">Sobre el costo</th><th className="num" title="Qué parte del precio (sin IGV) es ganancia">Margen del precio</th></tr></thead>
+                <thead><tr><th>Cuánto ganas</th><th className="num">Precio</th><th className="num">Costo (sin IGV)</th><th className="num">Ganancia</th><th className="num" title="Qué parte del precio (sin IGV) es ganancia">Margen del precio</th></tr></thead>
                 <tbody>{filasResultado.map((x) => {
                   const r = resultadoPrecio(x.precio, costo, x.factor, gravado);
                   return (
                     <tr key={x.nombre} className={r.pierde ? "bg-rojo-claro/40" : ""}>
                       <td className="font-semibold">{x.nombre}</td><td className="num">{soles(x.precio)}</td><td className="num text-ink-2">{soles(r.costo)}</td>
                       <td className={`num font-semibold ${r.pierde ? "text-rojo" : "text-ok"}`}>{r.pierde ? `− ${soles(-r.ganancia)}` : soles(r.ganancia)}</td>
-                      <td className={`num ${r.pierde ? "text-rojo" : ""}`}>{pct(r.sobreCosto)}</td><td className={`num ${r.pierde ? "text-rojo" : ""}`}>{pct(r.delPrecio)}</td>
+                      <td className={`num ${r.pierde ? "text-rojo" : ""}`}>{pct(r.delPrecio)}</td>
                     </tr>
                   );
                 })}</tbody>
@@ -214,11 +224,19 @@ export function FormProducto({ producto: p, categorias, laboratorios, alCerrar, 
             </div>
           ) : null}
         </fieldset>
-        {!p ? <p className="text-[13px] text-ink-2">El producto se crea con stock 0. Las unidades entran al registrar la compra, con su lote y vencimiento.</p> : null}
-        {error ? <p className="text-sm text-rojo" role="alert">{error}</p> : null}
-        <div className="flex justify-end gap-2">
+      </div>
+        <div className="sticky bottom-0 border-t border-foil-2 bg-papel">
+        <div className="max-w-[1400px] mx-auto px-4 sm:px-8 py-3 flex flex-wrap items-center justify-end gap-x-4 gap-y-2">
+        <div className="flex-1 min-w-[240px] text-[13px]">
+          {error ? <p className="text-rojo" role="alert">{error}</p>
+            : faltan.length ? <p className="text-ink-2">Para {p ? "guardar" : "crear el producto"} falta: <b>{faltan.join(", ")}</b></p>
+            : !p ? <p className="text-ink-2">El producto se crea con stock 0. Las unidades entran al registrar la compra, con su lote y vencimiento.</p> : null}
+        </div>
+        <div className="flex gap-2">
           <Boton variante="fantasma" onClick={alCerrar}>Cancelar</Boton>
-          <Boton variante="amor" cargando={ocupado} disabled={!f.codigo || !f.nombre.trim() || !lab || !(num(pvp) > 0) || f.costo === ""} onClick={guardar}>{confirmarDuplicado ? "Es un producto distinto, guardar" : p ? "Guardar cambios" : "Crear producto"}</Boton>
+          <Boton variante="amor" cargando={ocupado} disabled={faltan.length > 0} onClick={guardar}>{confirmarDuplicado ? "Es un producto distinto, guardar" : p ? "Guardar cambios" : "Crear producto"}</Boton>
+        </div>
+        </div>
         </div>
       </div>
     </Modal>

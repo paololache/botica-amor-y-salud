@@ -7,11 +7,12 @@ import { Boton, Cargando, Encabezado, Entrada, Insignia, Interruptor, Modal, Pes
 import { FormProducto, type ProductoEditable } from "@/components/form-producto";
 import { useUsuario } from "@/components/shell";
 import { tieneRol } from "@/lib/permisos";
+import { resultadoPrecio } from "@/lib/precios";
 
 type P = {
   id: number; codigo: string; nombre: string; nombreComercial: string | null; patologias: string | null; principioActivo: string | null; concentracion: string | null; formaFarmaceutica: string | null; registroSanitario: string | null; registroVence: string | null;
   laboratorioId: number | null; laboratorio: string | null; categoria: string | null; condicionVenta: string; ubicacion: string | null;
-  stock: number; stockVigente: number; stockMinimo: number; proximoVencimiento: string | null; costoPromedio?: number; porcentajeUtilidad?: number;
+  stock: number; stockVigente: number; stockMinimo: number; proximoVencimiento: string | null; costoPromedio?: number; porcentajeUtilidad?: number; tipoIgv?: string;
   enPromocion: boolean; campana: { id: number; porcentaje: number; estado: string; inicio: string; fin: string; nombre: string } | null; presentaciones: { id: number; nombre: string; factor: number; pvp: number; codigo: string | null }[];
 };
 type Lista = { productos: P[]; total: number; pagina: number; categorias: { id: number; nombre: string }[]; laboratorios: { id: number; nombre: string }[] };
@@ -150,7 +151,7 @@ export default function Productos() {
             {ficha.registroSanitario ? <p className="text-sm text-ink-2 mt-1">Registro sanitario {ficha.registroSanitario}{ficha.registroVence ? ` · vence ${vence(ficha.registroVence)}` : ""}</p> : null}
             <div className="flex flex-wrap gap-2 mt-4">
               {ficha.presentaciones.map((p) => <div key={p.id} className="rounded-xl border border-foil-2 px-3 py-2"><p className="text-[12px] text-ink-3">{p.nombre}</p><p className="font-semibold">{soles(p.pvp)}</p>{p.codigo ? <p className="text-[11.5px] text-ink-3 tabular-nums">{p.codigo}</p> : null}</div>)}
-              {u.verCostos ? <div className="rounded-xl bg-foil px-3 py-2"><p className="text-[12px] text-ink-3">Costo promedio · utilidad</p><p className="font-semibold">{soles(ficha.costoPromedio)} · {ficha.porcentajeUtilidad}%</p></div> : null}
+              {u.verCostos ? <div className="rounded-xl bg-foil px-3 py-2"><p className="text-[12px] text-ink-3">Costo promedio (sin IGV) · ganancia por unidad</p><p className="font-semibold">{soles(ficha.costoPromedio)} · {(() => { const u1 = ficha.presentaciones.find((x) => x.factor === 1); const r = u1 && ficha.costoPromedio !== undefined ? resultadoPrecio(u1.pvp, ficha.costoPromedio, 1, (ficha.tipoIgv ?? "GRAVADO") === "GRAVADO") : null; return r ? <span className={r.pierde ? "text-rojo" : "text-ok"}>{r.pierde ? `− ${soles(-r.ganancia)}` : soles(r.ganancia)}</span> : "—"; })()}</p></div> : null}
             </div>
             <h3 className="font-display font-semibold text-[15px] mt-6 mb-2">Lotes</h3>
             <table className="tabla"><thead><tr><th>Lote y vencimiento</th><th>Estado</th><th className="num">Unidades</th>{u.verCostos ? <th className="num">Costo</th> : null}</tr></thead>
